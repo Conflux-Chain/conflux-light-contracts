@@ -1,0 +1,11 @@
+{
+  "name": "conflux_light_node",
+  "version": "0.0.1",
+  "description": "Conflux light node in the solidity implementation",
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.8.2"
+  },
+  "devDependencies": {
+    "hardhat": "^2.13.0"
+  }
+}
