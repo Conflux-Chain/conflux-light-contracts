@@ -49,6 +49,7 @@ library Types {
         uint64 quorumVotingPower;
         mapping (bytes32 => CommitteeMember) members;
         bytes32[] accounts;
+        uint256 numAccounts;
     }
 
     struct CommitteeMember {
@@ -61,26 +62,41 @@ library Types {
             committee.quorumVotingPower = state.quorumVotingPower;
         }
 
-        // reset
-        // TODO gas saving for sstore
-        uint256 len = committee.accounts.length;
-        if (len > 0) {
-            for (uint256 i = len - 1; i >= 0; i--) {
-                delete committee.members[committee.accounts[i]];
-                committee.accounts.pop();
-            }
+        // reset mapping
+        uint256 oldLen = committee.numAccounts;
+        for (uint256 i = 0; i < oldLen; i++) {
+            delete committee.members[committee.accounts[i]];
         }
 
-        // update
-        len = state.validators.length;
-        committee.accounts = new bytes32[](len);
-        for (uint256 i = 0; i < len; i++) {
+        // update mapping
+        uint256 newLen = state.validators.length;
+        for (uint256 i = 0; i < newLen; i++) {
             ValidatorInfo memory validator = state.validators[i];
-            committee.accounts[i] = validator.account;
+            require(validator.votingPower > 0, "validator voting pow is zero");
             committee.members[validator.account] = CommitteeMember(
                 validator.publicKey,
                 validator.votingPower
             );
+        }
+
+        // reset and update accounts array
+        if (oldLen == 0) {
+            committee.accounts = new bytes32[](newLen);
+            committee.numAccounts = newLen;
+            oldLen = newLen;
+        }
+
+        uint256 len = oldLen < newLen ? oldLen : newLen;
+        for (uint256 i = 0; i < len; i++) {
+            committee.accounts[i] = state.validators[i].account;
+        }
+
+        for (uint256 i = oldLen; i < newLen; i++) {
+            committee.accounts.push(state.validators[i].account);
+        }
+
+        if (oldLen != newLen) {
+            committee.numAccounts = newLen;
         }
     }
 
@@ -96,7 +112,6 @@ library Types {
             voted += member.votingPower;
 
             // duplicated validator not allowed
-            // TODO gas saving via bitmap?
             for (uint256 j = i + 1; j < ledgerInfo.signatures.length; j++) {
                 require(ledgerInfo.signatures[j].account != account, "duplicated validator");
             }
