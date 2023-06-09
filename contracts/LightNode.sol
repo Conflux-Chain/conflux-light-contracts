@@ -92,7 +92,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
         emit UpdateLightClient(msg.sender, ledgerInfo.epoch, ledgerInfo.round, ledgerInfo.pivot.height);
 
-        gc();
+        removeBlockHeader(1);
     }
 
     // relay pow blocks
@@ -106,7 +106,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
         emit UpdateBlockHeader(msg.sender, headers[0].height, headers[headers.length - 1].height);
 
-        gc();
+        removeBlockHeader(1);
     }
 
     function _validateHeaders(Types.BlockHeader[] memory headers) private view returns (Types.BlockHeader memory head) {
@@ -131,16 +131,28 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         require(head.height > _state.earliestBlockNumber, "block number too small");
     }
 
-    function gc() public {
+    function removeBlockHeader(uint256 limit) public override {
+        require(limit > 0, "limit is zero");
+
         if (_state.blocks <= _state.maxBlocks) {
             return;
         }
 
-        uint256 earliest = _state.earliestBlockNumber;
-        delete finalizedBlocks[earliest];
-        _state.blocks--;
+        uint256 numRemoved = _state.blocks - _state.maxBlocks;
+        if (numRemoved > limit) {
+            numRemoved = limit;
+        }
 
-        earliest++;
+        uint256 earliest = _state.earliestBlockNumber;
+        for (; numRemoved > 0; earliest++) {
+            if (finalizedBlocks[earliest] != 0) {
+                delete finalizedBlocks[earliest];
+                numRemoved--;
+            }
+        }
+
+        _state.blocks -= numRemoved;
+
         while (finalizedBlocks[earliest] == 0) {
             earliest++;
         }

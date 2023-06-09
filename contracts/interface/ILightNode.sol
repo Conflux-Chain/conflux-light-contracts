@@ -31,6 +31,7 @@ interface ILightNode {
 
     function updateLightClient(Types.LedgerInfoWithSignatures memory ledgerInfo) external;
     function updateBlockHeader(Types.BlockHeader[] memory headers) external;
+    function removeBlockHeader(uint256 limit) external;
 
     function clientState() external view returns(ClientState memory);
     function verifiableHeaderRange() external view returns (uint256, uint256);
