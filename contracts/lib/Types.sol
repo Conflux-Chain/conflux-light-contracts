@@ -103,18 +103,17 @@ library Types {
     function validateBLS(Committee storage committee, LedgerInfoWithSignatures memory ledgerInfo) internal view {
         uint256 voted = 0;
 
+        bytes32 lastAccount = 0;
+
         for (uint256 i = 0; i < ledgerInfo.signatures.length; i++) {
             bytes32 account = ledgerInfo.signatures[i].account;
+            require(account > lastAccount, "signature accounts not in order");
+            lastAccount = account;
 
             // should be in committee
             CommitteeMember memory member = committee.members[account];
             require(member.votingPower > 0, "validator not in committee");
             voted += member.votingPower;
-
-            // duplicated validator not allowed
-            for (uint256 j = i + 1; j < ledgerInfo.signatures.length; j++) {
-                require(ledgerInfo.signatures[j].account != account, "duplicated validator");
-            }
 
             // TODO validate BLS public key
             // bytes memory pubKey = _recoverBLSPublicKey(ledgerInfo, ledgerInfo.signatures[i].consensusSignature);
