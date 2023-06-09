@@ -17,15 +17,13 @@ import "./Provable.sol";
 
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
-    uint256 public constant DEFER_EXECUTION_BLOCKS = 5;
-
     address public mptVerify;
 
     ClientState private _state;
     Types.Committee private _committee;
 
-    // pow block number => deferred receipt root
-    mapping(uint256 => bytes32) public deferredReceiptsRoots;
+    // pow block number => pow block hash
+    mapping(uint256 => bytes32) public finalizedBlocks;
 
     /**
      * @dev Always initialize with the first pos block of any epoch.
@@ -35,8 +33,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     function initialize(
         address _controller,
         address _mptVerify,
-        Types.LedgerInfoWithSignatures memory ledgerInfo,
-        Types.BlockHeader memory header
+        Types.LedgerInfoWithSignatures memory ledgerInfo
     ) external override initializer {
         require(_controller != address(0), "invalid controller address");
         require(_mptVerify != address(0), "invalid mptVerify address");
@@ -45,25 +42,20 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         mptVerify = _mptVerify;
 
         require(ledgerInfo.epoch > 0, "invalid epoch");
-        require(header.height > DEFER_EXECUTION_BLOCKS, "block number too small");
-        require(header.height == ledgerInfo.pivot.height, "block height mismatch");
-        require(Types.computeBlockHash(header) == ledgerInfo.pivot.blockHash, "block hash mismatch");
+        require(ledgerInfo.pivot.height > 0, "block number too small");
 
         // init client state
         _state.epoch = ledgerInfo.epoch;
         _state.round = ledgerInfo.round;
-        _state.earliestBlockNumber = header.height;
-        _state.finalizedBlockNumber = header.height;
-        _state.maxBlocks = 86400 * 7;   // about one week
+        _state.earliestBlockNumber = ledgerInfo.pivot.height;
+        _state.finalizedBlockNumber = ledgerInfo.pivot.height;
+        _state.blocks = 1;
+        _state.maxBlocks = 3 * 1440 * 30; // about 1 month
+        finalizedBlocks[ledgerInfo.pivot.height] = ledgerInfo.pivot.blockHash;
 
         // init committee
         require(ledgerInfo.nextEpochState.epoch == ledgerInfo.epoch, "invalid committee epoch");
         Types.updateCommittee(_committee, ledgerInfo.nextEpochState);
-
-        if (!Types.isEmptyBlock(header)) {
-            deferredReceiptsRoots[header.height] = header.deferredReceiptsRoot;
-            _state.blocks = 1;
-        }
     }
 
     modifier onlyInitialized() {
@@ -77,9 +69,6 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
     // relay pos block
     function updateLightClient(Types.LedgerInfoWithSignatures memory ledgerInfo) external override onlyInitialized whenNotPaused {
-        // ensure previous pow blocks already fully relayed
-        require(_state.relayBlockEndNumber == 0, "pow blocks not relayed yet");
-
         require(ledgerInfo.epoch == _state.epoch, "epoch mismatch");
         require(ledgerInfo.round > _state.round, "round mismatch");
 
@@ -96,92 +85,76 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
         // in case that pow block may not generate for a long time
         if (ledgerInfo.pivot.height > _state.finalizedBlockNumber) {
-            _state.relayBlockStartNumber = _state.finalizedBlockNumber + 1;
-            _state.relayBlockEndNumber = ledgerInfo.pivot.height;
-            _state.relayBlockEndHash = ledgerInfo.pivot.blockHash;
             _state.finalizedBlockNumber = ledgerInfo.pivot.height;
+            _state.blocks++;
+            finalizedBlocks[ledgerInfo.pivot.height] = ledgerInfo.pivot.blockHash;
         }
 
-        emit UpdateLightClient(msg.sender, ledgerInfo.epoch, ledgerInfo.round);
+        emit UpdateLightClient(msg.sender, ledgerInfo.epoch, ledgerInfo.round, ledgerInfo.pivot.height);
+
+        gc();
     }
 
     // relay pow blocks
     function updateBlockHeader(Types.BlockHeader[] memory headers) external override onlyInitialized whenNotPaused {
-        require(_state.relayBlockEndNumber != 0, "no pow block to relay");
+        Types.BlockHeader memory head = _validateHeaders(headers);
 
+        if (finalizedBlocks[head.height] == bytes32(0)) {
+            _state.blocks++;
+            finalizedBlocks[head.height] = Types.computeBlockHash(head);
+        }
+
+        emit UpdateBlockHeader(msg.sender, headers[0].height, headers[headers.length - 1].height);
+
+        gc();
+    }
+
+    function _validateHeaders(Types.BlockHeader[] memory headers) private view returns (Types.BlockHeader memory head) {
         require(headers.length > 0, "empty block headers");
-        require(headers.length <= _state.relayBlockEndNumber - _state.relayBlockStartNumber + 1, "too many block headers");
 
-        // relay in reverse order
-        uint256 expectedBlockNumber = _state.relayBlockEndNumber;
-        bytes32 expectedBlockHash = _state.relayBlockEndHash;
-        uint256 nonEmptyBlocks = 0;
+        Types.BlockHeader memory tail = headers[headers.length - 1];
+        uint256 expectedBlockNumber = tail.height;
+        bytes32 expectedBlockHash = finalizedBlocks[tail.height];
+        require(expectedBlockHash != bytes32(0), "tail block not found");
         for (uint256 i = 0; i < headers.length; i++) {
+            // validate in reverse order
             uint256 index = headers.length - 1 - i;
+
             require(headers[index].height == expectedBlockNumber, "block number mismatch");
             require(Types.computeBlockHash(headers[index]) == expectedBlockHash, "block hash mismatch");
-
-            if (!Types.isEmptyBlock(headers[index])) {
-                deferredReceiptsRoots[expectedBlockNumber] = headers[index].deferredReceiptsRoot;
-                nonEmptyBlocks++;
-            }
 
             expectedBlockNumber--;
             expectedBlockHash = headers[index].parentHash;
         }
 
-        if (nonEmptyBlocks > 0) {
-            _state.blocks += nonEmptyBlocks;
-        }
-
-        // update relay state
-        if (expectedBlockNumber < _state.relayBlockStartNumber) {
-            // completed to relay pow blocks
-            _state.relayBlockEndNumber = 0;
-        } else {
-            // partial pow blocks relayed
-            _state.relayBlockEndNumber = expectedBlockNumber;
-            _state.relayBlockEndHash = expectedBlockHash;
-        }
-
-        emit UpdateBlockHeader(msg.sender, headers[0].height, headers[headers.length - 1].height);
+        head = headers[0];
+        require(head.height > _state.earliestBlockNumber, "block number too small");
     }
 
-    // garbage collect pow blocks
-    function removeBlockHeader(uint256 limit) external override {
-        require(limit > 0, "limit is zero");
-
+    function gc() public {
         if (_state.blocks <= _state.maxBlocks) {
             return;
         }
 
-        uint256 numRemoved = _state.blocks - _state.maxBlocks;
-        if (numRemoved > limit) {
-            numRemoved = limit;
-        }
-
         uint256 earliest = _state.earliestBlockNumber;
-        uint256 nonEmptyBlocks = 0;
-        for (uint256 i = earliest; i < earliest + numRemoved; i++) {
-            if (deferredReceiptsRoots[i] != bytes32(0)) {
-                nonEmptyBlocks++;
-                delete deferredReceiptsRoots[i];
-            }
+        delete finalizedBlocks[earliest];
+        _state.blocks--;
+
+        earliest++;
+        while (finalizedBlocks[earliest] == 0) {
+            earliest++;
         }
 
-        if (nonEmptyBlocks > 0) {
-            _state.blocks -= nonEmptyBlocks;
-        }
-
-        _state.earliestBlockNumber = earliest + numRemoved;
+        _state.earliestBlockNumber = earliest;
     }
 
-    function verifyReceiptProof(Types.ReceiptProof memory proof) public view override returns (bool success, Types.TxLog[] memory logs) {
-        bytes32 root = deferredReceiptsRoots[proof.epochNumber + DEFER_EXECUTION_BLOCKS];
-        require(root != bytes32(0), "epoch number not verifiable");
+    function verifyReceiptProof(Types.ReceiptProof memory proof) public view override returns (
+        bool success, Types.TxLog[] memory logs
+    ) {
+        Types.BlockHeader memory head = _validateHeaders(proof.headers);
 
         success = Provable(mptVerify).proveReceipt(
-            root,
+            head.deferredReceiptsRoot,
             proof.blockIndex,
             proof.blockProof,
             proof.receiptsRoot,
@@ -215,8 +188,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     }
 
     function verifiableHeaderRange() external view override returns (uint256, uint256) {
-        uint256 latest = _state.relayBlockEndNumber == 0 ? _state.finalizedBlockNumber : _state.relayBlockStartNumber - 1;
-        return (_state.earliestBlockNumber - DEFER_EXECUTION_BLOCKS, latest - DEFER_EXECUTION_BLOCKS);
+        return (_state.earliestBlockNumber, _state.finalizedBlockNumber);
     }
 
     /** common code copied from other light nodes ********************/

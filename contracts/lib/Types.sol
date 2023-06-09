@@ -289,7 +289,9 @@ library Types {
     }
 
     struct ReceiptProof {
-        uint256 epochNumber;
+        // Continuous block headers, that head is for receipts root,
+        // and tail block should be relayed on chain.
+        BlockHeader[] headers;
 
         bytes blockIndex;
         ProofLib.ProofNode[] blockProof;
