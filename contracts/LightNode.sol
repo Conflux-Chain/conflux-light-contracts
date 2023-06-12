@@ -9,12 +9,6 @@ import "./interface/ILightNode.sol";
 import "./lib/Types.sol";
 import "./Provable.sol";
 
-// Possible improvements:
-// 1.1 Could only relay pos blocks and provide pow block headers to verify proof.
-// 1.2 Archive pos blocks into merkle root to support full history.
-//      E.g. merge 4096 blocks into a root (full simple MPT with depth 3), and ~130 roots per year.
-// 2. Allow to validate transaction proof.
-
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
     address public mptVerify;
@@ -201,6 +195,17 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
     function verifiableHeaderRange() external view override returns (uint256, uint256) {
         return (_state.earliestBlockNumber, _state.finalizedBlockNumber);
+    }
+
+    function nearestPivot(uint256 height) external view override returns (uint256) {
+        require(height >= _state.earliestBlockNumber, "block already pruned");
+        require(height <= _state.finalizedBlockNumber, "block not finalized yet");
+
+        while (finalizedBlocks[height] == 0) {
+            height++;
+        }
+
+        return height;
     }
 
     /** common code copied from other light nodes ********************/

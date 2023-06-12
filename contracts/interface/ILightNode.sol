@@ -35,4 +35,5 @@ interface ILightNode {
 
     function clientState() external view returns(ClientState memory);
     function verifiableHeaderRange() external view returns (uint256, uint256);
+    function nearestPivot(uint256 height) external view returns (uint256);
 }
