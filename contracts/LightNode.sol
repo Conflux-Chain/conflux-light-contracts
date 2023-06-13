@@ -179,11 +179,23 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     ) {
         Types.ReceiptProof memory proof = abi.decode(receiptProof, (Types.ReceiptProof));
 
-        Types.TxLog[] memory logs;
-        (success, logs) = verifyReceiptProof(proof);
+        Types.BlockHeader memory head = _validateHeaders(proof.headers);
+
+        // not sure why OutOfGas occurred if put below line in the end
+        bytes memory encodedLogs = Types.encodeLogs(proof.receipt.logs);
+
+        success = Provable(mptVerify).proveReceipt(
+            head.deferredReceiptsRoot,
+            proof.blockIndex,
+            proof.blockProof,
+            proof.receiptsRoot,
+            proof.index,
+            proof.receipt,
+            proof.receiptProof
+        );
 
         if (success) {
-            rlpLogs = Types.encodeLogs(logs);
+            rlpLogs = encodedLogs;
         } else {
             message = "failed to verify mpt";
         }
