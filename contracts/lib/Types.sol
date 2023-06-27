@@ -4,6 +4,10 @@ pragma solidity ^0.8.4;
 
 import "./RLPEncode.sol";
 import "./ProofLib.sol";
+import "./BCS.sol";
+import "./BLS.sol";
+import "./Bytes.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 library Types {
 
@@ -40,7 +44,8 @@ library Types {
 
     struct ValidatorInfo {
         bytes32 account;
-        bytes publicKey;
+        bytes compressedPublicKey;
+        bytes uncompressedPublicKey; // encoded uncompressed public key in 128 bytes
         bytes vrfPublicKey;
         uint64 votingPower;
     }
@@ -74,7 +79,7 @@ library Types {
             ValidatorInfo memory validator = state.validators[i];
             require(validator.votingPower > 0, "validator voting pow is zero");
             committee.members[validator.account] = CommitteeMember(
-                validator.publicKey,
+                validator.uncompressedPublicKey,
                 validator.votingPower
             );
         }
@@ -101,11 +106,13 @@ library Types {
     }
 
     function validateBLS(Committee storage committee, LedgerInfoWithSignatures memory ledgerInfo) internal view {
-        uint256 voted = 0;
+        bytes memory bcsEncoded = _bcsEncodeLedgerInfo(ledgerInfo);
 
+        uint256 voted = 0;
         bytes32 lastAccount = 0;
 
         for (uint256 i = 0; i < ledgerInfo.signatures.length; i++) {
+            // requires in order to avoid duplicated pos account
             bytes32 account = ledgerInfo.signatures[i].account;
             require(account > lastAccount, "signature accounts not in order");
             lastAccount = account;
@@ -115,12 +122,120 @@ library Types {
             require(member.votingPower > 0, "validator not in committee");
             voted += member.votingPower;
 
-            // TODO validate BLS public key
-            // bytes memory pubKey = _recoverBLSPublicKey(ledgerInfo, ledgerInfo.signatures[i].consensusSignature);
-            // require(keccak256(pubKey) == keccak256(member.publicKey), "public key invalid");
+            BLS.verify(ledgerInfo.signatures[i].consensusSignature, bcsEncoded, member.publicKey);
         }
 
         require(voted >= committee.quorumVotingPower, "voting power not enough");
+    }
+
+    bytes32 private constant BCS_CFX_PREFIX = 0xcd510d1ab583c33b54fa949014601df0664857c18c4cfb228c862dd869df1b62;
+
+    function _bcsEncodeLedgerInfo(LedgerInfoWithSignatures memory ledgerInfo) private pure returns (bytes memory) {
+        bytes memory consensusDataHash = abi.encodePacked(ledgerInfo.consensusDataHash);
+        bytes memory id = abi.encodePacked(ledgerInfo.id);
+        bytes memory executedStateId = abi.encodePacked(ledgerInfo.executedStateId);
+
+        uint256 size = BCS.SIZE_BYTES32 // BCS prefix
+            + BCS.SIZE_UINT64 // epoch
+            + BCS.SIZE_UINT64 // round
+            + BCS.sizeBytes(id)
+            + BCS.sizeBytes(executedStateId)
+            + BCS.SIZE_UINT64 // version
+            + BCS.SIZE_UINT64 // timestampUsecs
+            + BCS.SIZE_OPTION + _bcsSize(ledgerInfo.nextEpochState) // Option(nextEpochState)
+            + BCS.SIZE_OPTION // Option(pivot)
+            + BCS.sizeBytes(consensusDataHash);
+
+        bytes memory pivotBlockHash;
+        if (ledgerInfo.pivot.blockHash != 0) {
+            pivotBlockHash = bytes(Strings.toHexString(uint256(bytes32(ledgerInfo.pivot.blockHash)), 32));
+            size += BCS.SIZE_UINT64; // height
+            size += BCS.sizeBytes(pivotBlockHash); // block hash
+        }
+
+        Bytes.Builder memory builder = Bytes.newBuilder(size);
+
+        BCS.encodeBytes32(builder, BCS_CFX_PREFIX);
+        BCS.encodeUint64(builder, ledgerInfo.epoch);
+        BCS.encodeUint64(builder, ledgerInfo.round);
+        BCS.encodeBytes(builder, id);
+        BCS.encodeBytes(builder, executedStateId);
+        BCS.encodeUint64(builder, ledgerInfo.version);
+        BCS.encodeUint64(builder, ledgerInfo.timestampUsecs);
+        _bcsEncode(builder, ledgerInfo.nextEpochState);
+
+        // pivot
+        BCS.encodeOption(builder, ledgerInfo.pivot.blockHash != 0);
+        if (ledgerInfo.pivot.blockHash != 0) {
+            BCS.encodeUint64(builder, ledgerInfo.pivot.height);
+            BCS.encodeBytes(builder, pivotBlockHash);
+        }
+
+        BCS.encodeBytes(builder, consensusDataHash);
+
+        return builder.buf;
+    }
+
+    function _bcsSize(EpochState memory state) private pure returns (uint256 size) {
+        if (state.epoch == 0) {
+            return 0;
+        }
+
+        size += BCS.SIZE_UINT64; // epoch
+        size += BCS.SIZE_UINT64; // quorumVotingPower
+        size += BCS.SIZE_UINT64; // totalVotingPower
+
+        size += BCS.sizeBytes(state.vrfSeed); // vrf seed
+
+        // validators
+        uint256 numValidators = state.validators.length;
+        size += BCS.sizeLength(numValidators);
+        bytes32 lastAccount = 0;
+        for (uint256 i = 0; i < numValidators; i++) {
+            // pos account in ASC order
+            ValidatorInfo memory validator = state.validators[i];
+            require(validator.account > lastAccount, "Validators not in order");
+            lastAccount = validator.account;
+
+            // map key: pos account
+            size += BCS.SIZE_BYTES32;
+
+            // map value: public key, vrf public key and voting power
+            size += BCS.sizeBytes(validator.compressedPublicKey);
+            size += BCS.SIZE_OPTION;
+            if (validator.vrfPublicKey.length > 0) {
+                size += BCS.sizeBytes(validator.vrfPublicKey);
+            }
+            size += BCS.SIZE_UINT64;
+        }
+    }
+
+    function _bcsEncode(Bytes.Builder memory builder, EpochState memory state) private pure {
+        BCS.encodeOption(builder, state.epoch > 0);
+
+        if (state.epoch == 0) {
+            return;
+        }
+
+        BCS.encodeUint64(builder, state.epoch);
+
+        uint256 numValidators = state.validators.length;
+        BCS.encodeLength(builder, numValidators);
+        for (uint256 i = 0; i < numValidators; i++) {
+            ValidatorInfo memory validator = state.validators[i];
+            BCS.encodeBytes32(builder, validator.account);
+
+            BCS.encodeBytes(builder, validator.compressedPublicKey);
+            BCS.encodeOption(builder, validator.vrfPublicKey.length > 0);
+            if (validator.vrfPublicKey.length > 0) {
+                BCS.encodeBytes(builder, validator.vrfPublicKey);
+            }
+            BCS.encodeUint64(builder, validator.votingPower);
+        }
+
+        BCS.encodeUint64(builder, state.quorumVotingPower);
+        BCS.encodeUint64(builder, state.totalVotingPower);
+        BCS.encodeBytes(builder, state.vrfSeed);
     }
 
     struct BlockHeader {
@@ -201,91 +316,6 @@ library Types {
     function computeBlockHash(BlockHeader memory header) internal pure returns (bytes32) {
         bytes memory encoded = encodeBlockHeader(header);
         return keccak256(encoded);
-    }
-
-    // compare with pre-computed receipts root for empty blocks [1, 20]
-    function isEmptyBlock(BlockHeader memory header) internal pure returns (bool) {
-        if (header.deferredReceiptsRoot == 0x09f8709ea9f344a810811a373b30861568f5686e649d6177fd92ea2db7477508) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x12af19d53c378426ebe08ad33e48caf3efdaaade0994770c161c0637e65a6566) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xd5f7e7960e9b56753868260c280746c01353dcd1b91a20cee2c919d0dc7bf78b) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x57e0321f5f0efec94535cd6ad03d443a42892a6ee12f29030b8088b6779bd87a) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xa7b4b94904890070672b21e6776c4ae06241a9a6fe88b3726f4c0edb2594257a) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x42f61401e73d24bc24028eb3209bbe9d135be4a15dd56506dbdb66c38ad57984) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xd7862ef54f5a4b15bdeaee63f3980ec03404c9f287853b80f88d5dc8d445bc0e) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x0ea51f5d0e4cf9fa6ab8754df358757484d09750f5f5a89428bd726b980d935b) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x9341a5784b41abfd78f7beaa2c217f78bdd681fbe1ee5cbbded07e863466535a) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xa1da1d64f2e04d74e79e9eb0c3ddc5cd3451ef7b5b7a52992599e90678a8e1e1) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xeb9a8367b7c337007429aacde08df68b472cc05db17badf3349c0aa52b7a5b43) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x0b65f15fb078211b73cf5bfcb67b8d5dda93841bdd595f0bf0ebc51863d922db) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xf92b605838d45c811f96a01e50874f0c0b753290b3c377fdb0259b71b3c1eaf4) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x233046ceceb5ac2a080c1a57aa6858983aa01e705747f2e8815e75a9fee9d936) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x0c2d11c5f29ee19e2e5dce03fbba2034414c33315896e44f54263235d3863d4a) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x55fda8bbcfe5f702778bbc31dfae46b720bed7a000ba45479383cf7d6f18a71f) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xc631a8288b078fcd2961706020640c113a60fb782230a5cb7e75cf77bf8b415a) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x361fbf183096216dcdbb1b7e9ddef12ed701e0af4489681958a03672ad8f9200) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0xf4f37fec623a9f2db3716d2ec53a4e9d5f1a9a9e5b1eb47cc87c34993ed67fb9) {
-            return true;
-        }
-
-        if (header.deferredReceiptsRoot == 0x5c97b3758899c93a47387f9a6f05aa9600120925c07c009e108dc3713d94c937) {
-            return true;
-        }
-
-        return false;
     }
 
     struct ReceiptProof {
