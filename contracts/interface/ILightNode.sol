@@ -2,6 +2,7 @@
 
 pragma solidity ^0.8.4;
 
+import "../lib/LedgerInfoLib.sol";
 import "../lib/Types.sol";
 
 interface ILightNode {
@@ -22,14 +23,15 @@ interface ILightNode {
 
     function initialize(
         address _controller,
+        address _ledgerInfoUtil,
         address _mptVerify,
-        Types.LedgerInfoWithSignatures memory ledgerInfo
+        LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo
     ) external;
 
     function verifyReceiptProof(Types.ReceiptProof memory proof) external view returns (bool success, Types.TxLog[] memory logs);
     function verifyProofData(bytes memory receiptProof) external view returns (bool success, string memory message, bytes memory rlpLogs);
 
-    function updateLightClient(Types.LedgerInfoWithSignatures memory ledgerInfo) external;
+    function updateLightClient(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external;
     function updateBlockHeader(Types.BlockHeader[] memory headers) external;
     function removeBlockHeader(uint256 limit) external;
 

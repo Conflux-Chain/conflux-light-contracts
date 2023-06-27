@@ -6,15 +6,18 @@ import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "./interface/ILightNode.sol";
+import "./lib/LedgerInfoLib.sol";
 import "./lib/Types.sol";
+import "./LedgerInfo.sol";
 import "./Provable.sol";
 
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
+    address public ledgerInfoUtil;
     address public mptVerify;
 
     ClientState private _state;
-    Types.Committee private _committee;
+    LedgerInfoLib.Committee private _committee;
 
     // pow block number => pow block hash
     mapping(uint256 => bytes32) public finalizedBlocks;
@@ -26,13 +29,15 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
      */
     function initialize(
         address _controller,
+        address _ledgerInfoUtil,
         address _mptVerify,
-        Types.LedgerInfoWithSignatures memory ledgerInfo
+        LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo
     ) external override initializer {
         require(_controller != address(0), "invalid controller address");
         require(_mptVerify != address(0), "invalid mptVerify address");
 
         _changeAdmin(_controller);
+        ledgerInfoUtil = _ledgerInfoUtil;
         mptVerify = _mptVerify;
 
         require(ledgerInfo.epoch > 0, "invalid epoch");
@@ -49,7 +54,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
         // init committee
         require(ledgerInfo.nextEpochState.epoch == ledgerInfo.epoch, "invalid committee epoch");
-        Types.updateCommittee(_committee, ledgerInfo.nextEpochState);
+        LedgerInfoLib.updateCommittee(_committee, ledgerInfo.nextEpochState);
     }
 
     modifier onlyInitialized() {
@@ -62,11 +67,14 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     }
 
     // relay pos block
-    function updateLightClient(Types.LedgerInfoWithSignatures memory ledgerInfo) external override onlyInitialized whenNotPaused {
+    function updateLightClient(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external override onlyInitialized whenNotPaused {
         require(ledgerInfo.epoch == _state.epoch, "epoch mismatch");
         require(ledgerInfo.round > _state.round, "round mismatch");
 
-        Types.validateBLS(_committee, ledgerInfo);
+        bytes memory message = LedgerInfo(ledgerInfoUtil).bcsEncode(ledgerInfo);
+        (bytes[] memory signatures, bytes[] memory publicKeys) = LedgerInfoLib.packSignatures(_committee, ledgerInfo);
+        bool verified = LedgerInfo(ledgerInfoUtil).batchVerifyBLS(signatures, message, publicKeys);
+        require(verified, "invalid BLS signatures");
 
         if (ledgerInfo.nextEpochState.epoch == 0) {
             _state.round = ledgerInfo.round;
@@ -74,7 +82,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
             require(ledgerInfo.nextEpochState.epoch == _state.epoch + 1, "invalid epoch for the next committee");
             _state.epoch = ledgerInfo.nextEpochState.epoch;
             _state.round = 0; // indicate to relay pos block in next epoch
-            Types.updateCommittee(_committee, ledgerInfo.nextEpochState);
+            LedgerInfoLib.updateCommittee(_committee, ledgerInfo.nextEpochState);
         }
 
         // in case that pow block may not generate for a long time
