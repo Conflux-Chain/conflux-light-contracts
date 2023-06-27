@@ -53,4 +53,36 @@ library Bytes {
         builder.offset += n;
     }
 
+    function appendIntOSP(Builder memory builder, uint256 x, uint256 len) internal pure {
+        uint256 index = builder.offset + len - 1;
+
+        while (x > 0) {
+            builder.buf[index] = bytes1(uint8(x & 0xFF)); // big endian
+            index--;
+            x >>= 8;
+        }
+
+        builder.offset += len;
+    }
+
+    function concat2(bytes memory b1, bytes memory b2) internal pure returns (bytes memory) {
+        bytes memory result = new bytes(b1.length + b2.length);
+
+        for (uint256 i = 0; i < b1.length; i++) {
+            result[i] = b1[i];
+        }
+
+        for (uint256 i = 0; i < b2.length; i++) {
+            result[b1.length + i] = b2[i];
+        }
+
+        return result;
+    }
+
+    function copy(bytes memory b1, uint256 offset, bytes memory b2) internal pure {
+        for (uint256 i = 0; i < b2.length; i++) {
+            b1[offset + i] = b2[i];
+        }
+    }
+
 }
