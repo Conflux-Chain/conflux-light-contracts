@@ -46,4 +46,4 @@ function verifyProofData(bytes memory receiptProof) external view returns (bool 
 
 1. **RLP Encoding**: encode `false` into `0x00` instead of `0x80`.
 2. **MPT**: Only `branch node` and `leaf node` in Conflux MPT. Whereas, there is `extension node` in Ethereum.
-3. Conflux use BLS12-381 for PoS blocks, but the `hash_to_curve` is different from Ethereum.
+3. Conflux use **BLS12-381** algorithm for PoS blocks, but the `hash_to_curve` is different from Ethereum. For more details, please refer to the [implementation](./contracts/lib/BLS.sol).
