@@ -25,10 +25,10 @@ library BLS {
     function batchVerify(bytes[] memory signatures, bytes memory message, bytes[] memory publicKeys) internal view returns (bool) {
         require(signatures.length == publicKeys.length, "signatures and publicKeys length mismatch");
 
-        bytes memory hashedMessage = _hashToCurve(message);
+        bytes memory hashedMessage = hashToCurve(message);
 
         for (uint256 i = 0; i < signatures.length; i++) {
-            if (!_verify(signatures[i], hashedMessage, publicKeys[i])) {
+            if (!verifyHashed(signatures[i], hashedMessage, publicKeys[i])) {
                 return false;
             }
         }
@@ -43,11 +43,11 @@ library BLS {
      * @param publicKey uncompressed BLS public key in 96 bytes.
      */
     function verify(bytes memory signature, bytes memory message, bytes memory publicKey) internal view returns (bool) {
-        bytes memory hashedMessage = _hashToCurve(message);
-        return _verify(signature, hashedMessage, publicKey);
+        bytes memory hashedMessage = hashToCurve(message);
+        return verifyHashed(signature, hashedMessage, publicKey);
     }
 
-    function _verify(bytes memory signature, bytes memory hashedMessage, bytes memory publicKey) private view returns (bool) {
+    function verifyHashed(bytes memory signature, bytes memory hashedMessage, bytes memory publicKey) internal view returns (bool) {
         require(signature.length == 192, "BLS: signature length mismatch");
         require(publicKey.length == 96, "BLS: public key length mismatch");
 
@@ -72,24 +72,21 @@ library BLS {
         _paddingAppend(builder, 16, signature, 144, 48);
         _paddingAppend(builder, 16, signature, 96, 48);
 
-        bytes memory output = new bytes(32);
-        _callPrecompile(0x10, builder.buf, output); // BLS12_PAIRING
+        // BLS12_PAIRING
+        bytes memory output = callPrecompile(address(0x10), builder.seal());
 
         return abi.decode(output, (bool));
     }
 
-    function _hashToCurve(bytes memory message) private view returns (bytes memory g2) {
-        bytes[2] memory fe = _hashToField(message);
+    function hashToCurve(bytes memory message) internal view returns (bytes memory) {
+        bytes[2] memory fe = hashToField(message);
 
-        bytes memory p0 = new bytes(256);
-        _callPrecompile(0x12, fe[0], p0); // BLS12_MAP_FP2_TO_G2
+        // BLS12_MAP_FP2_TO_G2
+        bytes memory p0 = callPrecompile(address(0x12), fe[0]);
+        bytes memory p1 = callPrecompile(address(0x12), fe[1]);
 
-        bytes memory p1 = new bytes(256);
-        _callPrecompile(0x12, fe[1], p1); // BLS12_MAP_FP2_TO_G2
-
-        bytes memory input = Bytes.concat2(p0, p1);
-        g2 = new bytes(256);
-        _callPrecompile(0xd, input, g2); // BLS12_G2ADD
+        // BLS12_G2ADD
+        return callPrecompile(address(0xd), Bytes.concat2(p0, p1));
     }
 
     uint256 private constant H_IN_CHUNK_SIZE = 64;
@@ -102,8 +99,8 @@ library BLS {
     bytes32 private constant P_0 = 0x000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd7;
     bytes32 private constant P_1 = 0x64774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab;
 
-    function _hashToField(bytes memory message) private view returns (bytes[2] memory) {
-        bytes[2] memory expanded = _expandMessageXmd(message);
+    function hashToField(bytes memory message) internal view returns (bytes[2] memory) {
+        bytes[2] memory expanded = expandMessageXmd(message);
 
         for (uint256 i = 0; i < 2; i++) {
             for (uint256 j = 0; j < MSG_LEN/2; j += L) {
@@ -114,7 +111,7 @@ library BLS {
         return expanded;
     }
 
-    function _expandMessageXmd(bytes memory message) private pure returns (bytes[2] memory) {
+    function expandMessageXmd(bytes memory message) internal pure returns (bytes[2] memory) {
         bytes32[ELL+1] memory b;
 
         Bytes.Builder memory builder = Bytes.newBuilder(H_IN_CHUNK_SIZE + message.length + 2 + 1 + DST_SUFFIX.length);
@@ -123,13 +120,13 @@ library BLS {
         builder.appendIntOSP(MSG_LEN, 2);
         builder.appendIntOSP(0, 1);
         builder.appendBytes(DST_SUFFIX);
-        b[0] = sha256(builder.buf);
+        b[0] = sha256(builder.seal());
 
         builder = Bytes.newBuilder(32 + 1 + DST_SUFFIX.length);
         builder.appendBytes32(b[0]);
         builder.appendIntOSP(1, 1);
         builder.appendBytes(DST_SUFFIX);
-        b[1] = sha256(builder.buf);
+        b[1] = sha256(builder.seal());
 
         for (uint256 i = 2; i <= ELL; i++) {
             builder.reset();
@@ -138,7 +135,7 @@ library BLS {
             }
             builder.appendIntOSP(i, 1);
             builder.appendBytes(DST_SUFFIX);
-            b[i] = sha256(builder.buf);
+            b[i] = sha256(builder.seal());
         }
 
         Bytes.Builder memory fe0 = Bytes.newBuilder(128);
@@ -164,8 +161,8 @@ library BLS {
         builder.appendBytes32(P_0);
         builder.appendBytes32(P_1);
 
-        bytes memory output = new bytes(L);
-        _callPrecompile(0x5, builder.buf, output); // bigModExp
+        // bigModExp
+        bytes memory output = callPrecompile(address(0x5), builder.seal());
 
         Bytes.copy(buf, offset, output);
     }
@@ -175,16 +172,18 @@ library BLS {
         builder.appendBytes(val, offset, len);
     }
 
-    function _callPrecompile(uint256 addr, bytes memory input, bytes memory output) private view {
-        bool success;
-        uint256 inputLen = input.length;
-        uint256 outputLen = output.length;
-
-        assembly {
-            success := staticcall(gas(), addr, input, inputLen, output, outputLen)
+    function callPrecompile(address precompile, bytes memory input) internal view returns (bytes memory) {
+        (bool success, bytes memory out) = precompile.staticcall(input);
+        if (success) {
+            return out;
         }
 
-        require(success, "BLS: Failed to call pre-compile contract");
+        require(out.length > 0, "BLS: Failed to call pre-compile contract");
+
+        assembly {
+            let out_size := mload(out)
+            revert(add(32, out), out_size)
+        }
     }
 
 }

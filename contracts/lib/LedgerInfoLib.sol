@@ -74,6 +74,7 @@ library LedgerInfoLib {
         for (uint256 i = 0; i < newLen; i++) {
             ValidatorInfo memory validator = state.validators[i];
             require(validator.votingPower > 0, "validator voting pow is zero");
+            require(validator.uncompressedPublicKey.length == 96, "invalid BLS public key length");
             committee.members[validator.account] = CommitteeMember(
                 validator.uncompressedPublicKey,
                 validator.votingPower
@@ -104,13 +105,14 @@ library LedgerInfoLib {
     function packSignatures(Committee storage committee, LedgerInfoWithSignatures memory ledgerInfo) internal view returns (
         bytes[] memory signatures, bytes[] memory publicKeys
     ) {
-        signatures = new bytes[](ledgerInfo.signatures.length);
-        publicKeys = new bytes[](ledgerInfo.signatures.length);
+        uint256 numSignatures = ledgerInfo.signatures.length;
+        signatures = new bytes[](numSignatures);
+        publicKeys = new bytes[](numSignatures);
 
         uint256 voted = 0;
         bytes32 lastAccount = 0;
 
-        for (uint256 i = 0; i < ledgerInfo.signatures.length; i++) {
+        for (uint256 i = 0; i < numSignatures; i++) {
             // requires in order to avoid duplicated pos account
             bytes32 account = ledgerInfo.signatures[i].account;
             require(account > lastAccount, "signature accounts not in order");
@@ -173,7 +175,7 @@ library LedgerInfoLib {
 
         BCS.encodeBytes(builder, consensusDataHash);
 
-        return builder.buf;
+        return Bytes.seal(builder);
     }
 
     function _bcsSize(EpochState memory state) private pure returns (uint256 size) {

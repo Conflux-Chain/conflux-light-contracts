@@ -4,6 +4,8 @@ pragma solidity ^0.8.4;
 
 /**
  * @dev This is used to optimize gas cost for bytes operations.
+ *
+ * Note, client should make sure the buffer size is enough for append operations.
  */
 library Bytes {
 
@@ -14,6 +16,11 @@ library Bytes {
 
     function newBuilder(uint256 size) internal pure returns (Builder memory) {
         return Builder(new bytes(size), 0);
+    }
+
+    function seal(Builder memory builder) internal pure returns (bytes memory) {
+        require(builder.offset == builder.buf.length, "Bytes: buffer not fully filled");
+        return builder.buf;
     }
 
     function reset(Builder memory builder) internal pure {
@@ -46,7 +53,7 @@ library Bytes {
             builder.buf[builder.offset + i] = val[offset + i];
         }
 
-        builder.offset += val.length;
+        builder.offset += len;
     }
 
     function appendEmpty(Builder memory builder, uint256 n) internal pure {

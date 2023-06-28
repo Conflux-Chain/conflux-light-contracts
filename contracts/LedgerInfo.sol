@@ -34,4 +34,30 @@ contract LedgerInfo {
         return BLS.verify(signature, message, publicKey);
     }
 
+    /**
+     * @dev Verifies BLS signature with hashed message.
+     * @param signature uncompressed BLS signature in 192 bytes.
+     * @param g2Message hashed message (G2 point encoded) in 256 bytes to verify.
+     * @param publicKey uncompressed BLS public key in 96 bytes.
+     */
+    function verifyBLSHashed(bytes memory signature, bytes memory g2Message, bytes memory publicKey) public view returns (bool) {
+        return BLS.verifyHashed(signature, g2Message, publicKey);
+    }
+
+    function hashToCurve(bytes memory message) public view returns (bytes memory) {
+        return BLS.hashToCurve(message);
+    }
+
+    function hashToField(bytes memory message) public view returns (bytes[2] memory) {
+        return BLS.hashToField(message);
+    }
+
+    function expandMessageXmd(bytes memory message) public pure returns (bytes[2] memory) {
+        return BLS.expandMessageXmd(message);
+    }
+
+    function callPrecompile(address precompile, bytes memory input) public view returns (bytes memory) {
+        return BLS.callPrecompile(precompile, input);
+    }
+
 }
