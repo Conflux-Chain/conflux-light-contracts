@@ -6,21 +6,24 @@ Conflux light node contracts are used to verify transactions or receipts on othe
 
 [Provable](./contracts/Provable.sol) contract is an utility to verify MPT proof of Conflux network.
 
+## LegerInfo
+[LedgerInfo](./contracts/LedgerInfo.sol) contract is an utility to verify BLS signatures of ledger info.
+
 ## Light Node
 
-[Light node](./contracts/LightNode.sol) contract is deployed on any blockchain for Conflux transaction or receipt verification.
+[LightNode](./contracts/LightNode.sol) contract is deployed on any blockchain for Conflux transaction or receipt verification. It could be deployed behind a [LightNodeProxy](./contracts/LightNodeProxy.sol).
 
-Firstly, light node contract should be initialized with any trusted PoS/PoW block. Then, Off-chain service is required to relay blocks periodically:
+Firstly, light node contract should be initialized with any trusted PoS/PoW block. Then, Off-chain service is required to relay **PoS blocks** periodically. However, PoW blocks relay is not mandatory, since receipt proof contains PoW blocks to prove on chain. You could relay as many as PoW blocks whenever the **gas fee** for receipt proof verification is higher than PoW blocks relay.
 
 ```solidity
 function initialize(
     address _controller,
+    address _ledgerInfoUtil,
     address _mptVerify,
-    Types.LedgerInfoWithSignatures memory ledgerInfo,
-    Types.BlockHeader memory header
+    LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo
 ) external;
 
-function updateLightClient(Types.LedgerInfoWithSignatures memory ledgerInfo) external;
+function updateLightClient(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external;
 
 function updateBlockHeader(Types.BlockHeader[] memory headers) external;
 ```
@@ -42,4 +45,5 @@ function verifyProofData(bytes memory receiptProof) external view returns (bool 
 ## Differences from Ethereum
 
 1. **RLP Encoding**: encode `false` into `0x00` instead of `0x80`.
-2. **MPT**: Only **branch node** and **leaf node** in Conflux MPT. Whereas, there is **extension node** in Ethereum.
+2. **MPT**: Only `branch node` and `leaf node` in Conflux MPT. Whereas, there is `extension node` in Ethereum.
+3. Conflux use BLS12-381 for PoS blocks, but the `hash_to_curve` is different from Ethereum.
