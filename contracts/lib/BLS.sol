@@ -125,8 +125,17 @@ library BLS {
     function hashToField(bytes memory message) internal view returns (bytes memory) {
         bytes memory expanded = expandMessageXmd(message);
 
+        Bytes.Builder memory builder = Bytes.newBuilder(32 * 3 + L + 1 + L);
+        builder.appendIntOSP(L, 32);
+        builder.appendIntOSP(1, 32);
+        builder.appendIntOSP(L, 32);
+        builder.appendEmpty(L); // placeholder for expanded message
+        builder.appendUint8(1);
+        builder.appendBytes32(P_0);
+        builder.appendBytes32(P_1);
+
         for (uint256 i = 0; i < MSG_LEN; i += L) {
-            _inPlaceBigMod(expanded, i);
+            _inPlaceBigMod(builder, expanded, i);
         }
 
         return expanded;
@@ -167,15 +176,11 @@ library BLS {
         return b.seal();
     }
 
-    function _inPlaceBigMod(bytes memory buf, uint256 offset) private view {
-        Bytes.Builder memory builder = Bytes.newBuilder(32 * 3 + L + 1 + L);
-        builder.appendIntOSP(L, 32);
-        builder.appendIntOSP(1, 32);
-        builder.appendIntOSP(L, 32);
+    function _inPlaceBigMod(Bytes.Builder memory builder, bytes memory buf, uint256 offset) private view {
+        builder.reset();
+        builder.appendEmpty(96);
         builder.appendBytes(buf, offset, L);
-        builder.appendUint8(1);
-        builder.appendBytes32(P_0);
-        builder.appendBytes32(P_1);
+        builder.appendEmpty(1 + L);
 
         callPrecompile(PRECOMPILE_BIG_MOD_EXP, builder.seal(), buf, offset, L);
     }
