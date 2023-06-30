@@ -91,7 +91,7 @@ library BLS {
         _paddingAppend(builder, 16, signature, 96, 48);
 
         // BLS12_PAIRING
-        bytes memory output = callPrecompile(address(0x10), builder.seal());
+        bytes memory output = callPrecompile(address(0x10), builder.seal(), 32);
 
         return abi.decode(output, (bool));
     }
@@ -100,11 +100,11 @@ library BLS {
         bytes[2] memory fe = hashToField(message);
 
         // BLS12_MAP_FP2_TO_G2
-        bytes memory p0 = callPrecompile(address(0x12), fe[0]);
-        bytes memory p1 = callPrecompile(address(0x12), fe[1]);
+        bytes memory p0 = callPrecompile(address(0x12), fe[0], 256);
+        bytes memory p1 = callPrecompile(address(0x12), fe[1], 256);
 
         // BLS12_G2ADD
-        return callPrecompile(address(0xd), Bytes.concat2(p0, p1));
+        return callPrecompile(address(0xd), Bytes.concat2(p0, p1), 256);
     }
 
     uint256 private constant H_IN_CHUNK_SIZE = 64;
@@ -180,7 +180,7 @@ library BLS {
         builder.appendBytes32(P_1);
 
         // bigModExp
-        bytes memory output = callPrecompile(address(0x5), builder.seal());
+        bytes memory output = callPrecompile(address(0x5), builder.seal(), L);
 
         Bytes.copy(buf, offset, output);
     }
@@ -190,18 +190,15 @@ library BLS {
         builder.appendBytes(val, offset, len);
     }
 
-    function callPrecompile(address precompile, bytes memory input) internal view returns (bytes memory) {
-        (bool success, bytes memory out) = precompile.staticcall(input);
-        if (success) {
-            return out;
-        }
-
-        require(out.length > 0, "BLS: Failed to call pre-compile contract");
+    function callPrecompile(address precompile, bytes memory input, uint256 outputLen) internal view returns (bytes memory out) {
+        bool success;
+        out = new bytes(outputLen);
 
         assembly {
-            let out_size := mload(out)
-            revert(add(32, out), out_size)
+            success := staticcall(gas(), precompile, add(input, 32), mload(input), add(out, 32), outputLen)
         }
+
+        require(success, "BLS: Failed to call pre-compile contract");
     }
 
 }

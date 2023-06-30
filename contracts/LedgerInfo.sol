@@ -56,8 +56,8 @@ contract LedgerInfo {
         return BLS.expandMessageXmd(message);
     }
 
-    function callPrecompile(address precompile, bytes memory input) public view returns (bytes memory) {
-        return BLS.callPrecompile(precompile, input);
+    function callPrecompile(address precompile, bytes memory input, uint256 outputLen) public view returns (bytes memory) {
+        return BLS.callPrecompile(precompile, input, outputLen);
     }
 
 }
