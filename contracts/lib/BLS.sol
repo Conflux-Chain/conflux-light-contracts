@@ -26,9 +26,10 @@ library BLS {
         require(signatures.length == publicKeys.length, "signatures and publicKeys length mismatch");
 
         bytes memory hashedMessage = hashToCurve(message);
+        Bytes.Builder memory builder = _prepareBuffer(hashedMessage);
 
         for (uint256 i = 0; i < signatures.length; i++) {
-            if (!verifyHashed(signatures[i], hashedMessage, publicKeys[i])) {
+            if (!_verify(builder, signatures[i], publicKeys[i])) {
                 return false;
             }
         }
@@ -48,14 +49,15 @@ library BLS {
     }
 
     function verifyHashed(bytes memory signature, bytes memory hashedMessage, bytes memory publicKey) internal view returns (bool) {
-        require(signature.length == 192, "BLS: signature length mismatch");
-        require(publicKey.length == 96, "BLS: public key length mismatch");
+        Bytes.Builder memory builder = _prepareBuffer(hashedMessage);
+        return _verify(builder, signature, publicKey);
+    }
 
+    function _prepareBuffer(bytes memory hashedMessage) private pure returns (Bytes.Builder memory) {
         Bytes.Builder memory builder = Bytes.newBuilder(768);
 
         // public key with padding
-        _paddingAppend(builder, 16, publicKey, 0, 48);
-        _paddingAppend(builder, 16, publicKey, 48, 48);
+        builder.appendEmpty(128);
 
         // message
         builder.appendBytes(hashedMessage);
@@ -65,6 +67,22 @@ library BLS {
         builder.appendBytes32(G1_NEG_ONE_1);
         builder.appendBytes32(G1_NEG_ONE_2);
         builder.appendBytes32(G1_NEG_ONE_3);
+
+        return builder;
+    }
+
+    function _verify(Bytes.Builder memory builder, bytes memory signature, bytes memory publicKey) private view returns (bool) {
+        require(signature.length == 192, "BLS: signature length mismatch");
+        require(publicKey.length == 96, "BLS: public key length mismatch");
+
+        builder.reset();
+
+        // public key with padding
+        _paddingAppend(builder, 16, publicKey, 0, 48);
+        _paddingAppend(builder, 16, publicKey, 48, 48);
+
+        // message and -1 already filled
+        builder.appendEmpty(384);
 
         // signature with padding
         _paddingAppend(builder, 16, signature, 48, 48);
