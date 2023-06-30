@@ -148,11 +148,15 @@ library BLS {
 
         for (uint256 i = 2; i <= ELL; i++) {
             builder.reset();
-            for (uint256 j = 0; j < 32; j++) {
-                builder.appendUint8(uint8(b[0][j] ^ b[i - 1][j]));
+            // append b[0] ^ b[i-1] 
+            bytes32 xorVal;
+            uint256 offset = (i - 1) * 32;
+            assembly {
+                xorVal := xor(mload(b), mload(add(b, offset)))
             }
+            builder.appendBytes32(xorVal);
             builder.appendIntOSP(i, 1);
-            builder.appendBytes(DST_SUFFIX);
+            builder.appendEmpty(DST_SUFFIX.length); // filled already
             b[i] = sha256(builder.seal());
         }
 
