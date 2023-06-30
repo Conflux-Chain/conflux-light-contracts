@@ -9,6 +9,9 @@ pragma solidity ^0.8.4;
  */
 library Bytes {
 
+    uint256 private constant BYTES_HEADER_SIZE = 32;
+    uint256 private constant WORD = 32;
+
     struct Builder {
         bytes buf;
         uint256 offset;
@@ -33,26 +36,23 @@ library Bytes {
     }
 
     function appendBytes32(Builder memory builder, bytes32 val) internal pure {
-        for (uint256 i = 0; i < 32; i++) {
-            builder.buf[builder.offset + i] = val[i];
+        bytes memory buf = builder.buf;
+        uint256 offset = BYTES_HEADER_SIZE + builder.offset;
+
+        assembly {
+            mstore(add(buf, offset), val)
         }
 
         builder.offset += 32;
     }
 
     function appendBytes(Builder memory builder, bytes memory val) internal pure {
-        for (uint256 i = 0; i < val.length; i++) {
-            builder.buf[builder.offset + i] = val[i];
-        }
-
+        memcopy(builder.buf, builder.offset, val, 0, val.length);
         builder.offset += val.length;
     }
 
     function appendBytes(Builder memory builder, bytes memory val, uint256 offset, uint256 len) internal pure {
-        for (uint256 i = 0; i < len; i++) {
-            builder.buf[builder.offset + i] = val[offset + i];
-        }
-
+        memcopy(builder.buf, builder.offset, val, offset, len);
         builder.offset += len;
     }
 
@@ -74,21 +74,68 @@ library Bytes {
 
     function concat2(bytes memory b1, bytes memory b2) internal pure returns (bytes memory) {
         bytes memory result = new bytes(b1.length + b2.length);
-
-        for (uint256 i = 0; i < b1.length; i++) {
-            result[i] = b1[i];
-        }
-
-        for (uint256 i = 0; i < b2.length; i++) {
-            result[b1.length + i] = b2[i];
-        }
-
+        memcopy(result, 0, b1, 0, b1.length);
+        memcopy(result, b1.length, b2, 0, b2.length);
         return result;
     }
 
     function copy(bytes memory b1, uint256 offset, bytes memory b2) internal pure {
-        for (uint256 i = 0; i < b2.length; i++) {
-            b1[offset + i] = b2[i];
+        memcopy(b1, offset, b2, 0, b2.length);
+    }
+
+    function memcopy(bytes memory dst, uint256 dstOffset, bytes memory src, uint256 srcOffset, uint256 len) internal pure {
+        require(srcOffset + len <= src.length, "Bytes: src out of bound");
+        require(dstOffset + len <= dst.length, "Bytes: dst out of bound");
+
+        uint256 srcPtr;
+        uint256 dstPtr;
+        assembly {
+            srcPtr := add(src, add(BYTES_HEADER_SIZE, srcOffset))
+            dstPtr := add(dst, add(BYTES_HEADER_SIZE, dstOffset))
+        }
+
+        // copy word by word
+        uint256 copied = len / WORD * WORD;
+        for (; len >= WORD; len -= WORD) {
+            assembly {
+                mstore(dstPtr, mload(srcPtr))
+                srcPtr := add(srcPtr, WORD)
+                dstPtr := add(dstPtr, WORD)
+            }
+        }
+
+        if (len > 0) {
+            _copyIncompleteWord(dst, dstOffset + copied, src, srcOffset + copied, len);
+        }
+    }
+
+    function _copyIncompleteWord(bytes memory dst, uint256 dstOffset, bytes memory src, uint256 srcOffset, uint256 len) private pure {
+        if (dstOffset + len >= WORD) {
+            dstOffset = dstOffset + len - WORD;
+            assembly {
+                let srcPart := mload(add(src, add(BYTES_HEADER_SIZE, srcOffset)))
+                srcPart := shr(mul(sub(WORD, len), 8), srcPart)
+
+                let dstPtr := add(dst, add(BYTES_HEADER_SIZE, dstOffset))
+                let dstPart := mload(dstPtr)
+                dstPart := shr(mul(len, 8), dstPart)
+                dstPart := shl(mul(len, 8), dstPart)
+
+                mstore(dstPtr, or(srcPart, dstPart))
+            }
+        } else {
+            uint256 tailLen = WORD - dstOffset - len;
+            uint256 mask = ((1 << (len * 8)) - 1) << tailLen;
+            assembly {
+                let srcPart := mload(add(src, add(BYTES_HEADER_SIZE, srcOffset)))
+                srcPart := shr(mul(sub(WORD, len), 8), srcPart)
+                srcPart := shl(mul(tailLen, 8), srcPart)
+
+                let dstPtr := add(dst, BYTES_HEADER_SIZE)
+                let dstPart := mload(dstPtr)
+                dstPart := and(dstPart, not(mask))
+                mstore(dstPtr, or(srcPart, dstPart))
+            }
         }
     }
 
