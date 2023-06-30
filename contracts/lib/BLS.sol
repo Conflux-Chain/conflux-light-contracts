@@ -16,6 +16,11 @@ library BLS {
     bytes32 private constant G1_NEG_ONE_2 = 0x00000000000000000000000000000000114d1d6855d545a8aa7d76c8cf2e21f2;
     bytes32 private constant G1_NEG_ONE_3 = 0x67816aef1db507c96655b9d5caac42364e6f38ba0ecb751bad54dcd6b939c2ca;
 
+    address private constant PRECOMPILE_BIG_MOD_EXP = 0x0000000000000000000000000000000000000005;
+    address private constant PRECOMPILE_BLS12_MAP_FP2_TO_G2 = 0x0000000000000000000000000000000000000012;
+    address private constant PRECOMPILE_BLS12_G2ADD = 0x000000000000000000000000000000000000000d;
+    address private constant PRECOMPILE_BLS12_PAIRING = 0x0000000000000000000000000000000000000010;
+
     /**
      * @dev Batch verify BLS signatures.
      * @param signatures uncompressed BLS signatures.
@@ -90,21 +95,21 @@ library BLS {
         _paddingAppend(builder, 16, signature, 144, 48);
         _paddingAppend(builder, 16, signature, 96, 48);
 
-        // BLS12_PAIRING
-        bytes memory output = callPrecompile(address(0x10), builder.seal(), 32);
-
+        bytes memory output = new bytes(32);
+        callPrecompile(PRECOMPILE_BLS12_PAIRING, builder.seal(), output);
         return abi.decode(output, (bool));
     }
 
     function hashToCurve(bytes memory message) internal view returns (bytes memory) {
-        bytes[2] memory fe = hashToField(message);
+        bytes memory fe = hashToField(message);
 
-        // BLS12_MAP_FP2_TO_G2
-        bytes memory p0 = callPrecompile(address(0x12), fe[0], 256);
-        bytes memory p1 = callPrecompile(address(0x12), fe[1], 256);
+        bytes memory p = new bytes(512);
+        callPrecompile(PRECOMPILE_BLS12_MAP_FP2_TO_G2, fe, 0, 128, p, 0, 256);
+        callPrecompile(PRECOMPILE_BLS12_MAP_FP2_TO_G2, fe, 128, 128, p, 256, 256);
 
-        // BLS12_G2ADD
-        return callPrecompile(address(0xd), Bytes.concat2(p0, p1), 256);
+        bytes memory output = new bytes(256);
+        callPrecompile(PRECOMPILE_BLS12_G2ADD, p, output);
+        return output;
     }
 
     uint256 private constant H_IN_CHUNK_SIZE = 64;
@@ -117,20 +122,19 @@ library BLS {
     bytes32 private constant P_0 = 0x000000000000000000000000000000001a0111ea397fe69a4b1ba7b6434bacd7;
     bytes32 private constant P_1 = 0x64774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab;
 
-    function hashToField(bytes memory message) internal view returns (bytes[2] memory) {
-        bytes[2] memory expanded = expandMessageXmd(message);
+    function hashToField(bytes memory message) internal view returns (bytes memory) {
+        bytes memory expanded = expandMessageXmd(message);
 
-        for (uint256 i = 0; i < 2; i++) {
-            for (uint256 j = 0; j < MSG_LEN/2; j += L) {
-                _inPlaceBigMod(expanded[i], j);
-            }
+        for (uint256 i = 0; i < MSG_LEN; i += L) {
+            _inPlaceBigMod(expanded, i);
         }
 
         return expanded;
     }
 
-    function expandMessageXmd(bytes memory message) internal pure returns (bytes[2] memory) {
-        bytes32[ELL+1] memory b;
+    function expandMessageXmd(bytes memory message) internal pure returns (bytes memory) {
+        Bytes.Builder memory b = Bytes.newBuilder(ELL * 32);
+        bytes memory buf = b.buf;
 
         Bytes.Builder memory builder = Bytes.newBuilder(H_IN_CHUNK_SIZE + message.length + 2 + 1 + DST_SUFFIX.length);
         builder.appendIntOSP(0, H_IN_CHUNK_SIZE);
@@ -138,39 +142,29 @@ library BLS {
         builder.appendIntOSP(MSG_LEN, 2);
         builder.appendIntOSP(0, 1);
         builder.appendBytes(DST_SUFFIX);
-        b[0] = sha256(builder.seal());
+        bytes32 b0 = sha256(builder.seal());
 
         builder = Bytes.newBuilder(32 + 1 + DST_SUFFIX.length);
-        builder.appendBytes32(b[0]);
+        builder.appendBytes32(b0);
         builder.appendIntOSP(1, 1);
         builder.appendBytes(DST_SUFFIX);
-        b[1] = sha256(builder.seal());
+        b.appendBytes32(sha256(builder.seal()));
 
         for (uint256 i = 2; i <= ELL; i++) {
             builder.reset();
             // append b[0] ^ b[i-1] 
             bytes32 xorVal;
-            uint256 offset = (i - 1) * 32;
+            uint256 offset = b.offset;
             assembly {
-                xorVal := xor(mload(b), mload(add(b, offset)))
+                xorVal := xor(b0, mload(add(buf, offset)))
             }
             builder.appendBytes32(xorVal);
             builder.appendIntOSP(i, 1);
             builder.appendEmpty(DST_SUFFIX.length); // filled already
-            b[i] = sha256(builder.seal());
+            b.appendBytes32(sha256(builder.seal()));
         }
 
-        Bytes.Builder memory fe0 = Bytes.newBuilder(128);
-        for (uint256 i = 1; i <= ELL/2; i++) {
-            fe0.appendBytes32(b[i]);
-        }
-
-        Bytes.Builder memory fe1 = Bytes.newBuilder(128);
-        for (uint256 i = ELL/2 + 1; i <= ELL; i++) {
-            fe1.appendBytes32(b[i]);
-        }
-
-        return [fe0.buf, fe1.buf];
+        return b.seal();
     }
 
     function _inPlaceBigMod(bytes memory buf, uint256 offset) private view {
@@ -183,10 +177,7 @@ library BLS {
         builder.appendBytes32(P_0);
         builder.appendBytes32(P_1);
 
-        // bigModExp
-        bytes memory output = callPrecompile(address(0x5), builder.seal(), L);
-
-        Bytes.copy(buf, offset, output);
+        callPrecompile(PRECOMPILE_BIG_MOD_EXP, builder.seal(), buf, offset, L);
     }
 
     function _paddingAppend(Bytes.Builder memory builder, uint256 padding, bytes memory val, uint256 offset, uint256 len) private pure {
@@ -194,12 +185,27 @@ library BLS {
         builder.appendBytes(val, offset, len);
     }
 
-    function callPrecompile(address precompile, bytes memory input, uint256 outputLen) internal view returns (bytes memory out) {
+    function callPrecompile(address precompile, bytes memory input, bytes memory output) internal view {
+        return callPrecompile(precompile, input, 0, input.length, output, 0, output.length);
+    }
+
+    function callPrecompile(address precompile, bytes memory input, bytes memory output, uint256 outputOffset, uint256 outputLen) internal view {
+        return callPrecompile(precompile, input, 0, input.length, output, outputOffset, outputLen);
+    }
+
+    function callPrecompile(address precompile, 
+        bytes memory input, uint256 inputOffset, uint256 inputLen,
+        bytes memory output, uint256 outputOffset, uint256 outputLen
+    ) internal view {
+        require(inputOffset + inputLen <= input.length, "BLS: input out of bound");
+        require(outputOffset + outputLen <= output.length, "BLS: output out of bound");
+
         bool success;
-        out = new bytes(outputLen);
 
         assembly {
-            success := staticcall(gas(), precompile, add(input, 32), mload(input), add(out, 32), outputLen)
+            let inputPtr := add(input, add(inputOffset, 32))
+            let outputPtr := add(output, add(outputOffset, 32))
+            success := staticcall(gas(), precompile, inputPtr, inputLen, outputPtr, outputLen)
         }
 
         require(success, "BLS: Failed to call pre-compile contract");

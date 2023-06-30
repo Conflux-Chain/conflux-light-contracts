@@ -48,16 +48,18 @@ contract LedgerInfo {
         return BLS.hashToCurve(message);
     }
 
-    function hashToField(bytes memory message) public view returns (bytes[2] memory) {
+    function hashToField(bytes memory message) public view returns (bytes memory) {
         return BLS.hashToField(message);
     }
 
-    function expandMessageXmd(bytes memory message) public pure returns (bytes[2] memory) {
+    function expandMessageXmd(bytes memory message) public pure returns (bytes memory) {
         return BLS.expandMessageXmd(message);
     }
 
     function callPrecompile(address precompile, bytes memory input, uint256 outputLen) public view returns (bytes memory) {
-        return BLS.callPrecompile(precompile, input, outputLen);
+        bytes memory output = new bytes(outputLen);
+        BLS.callPrecompile(precompile, input, output);
+        return output;
     }
 
 }
