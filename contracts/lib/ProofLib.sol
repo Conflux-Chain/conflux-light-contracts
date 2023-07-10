@@ -2,7 +2,10 @@
 
 pragma solidity ^0.8.4;
 
+import "./Bytes.sol";
+
 library ProofLib {
+    using Bytes for Bytes.Builder;
 
     bytes32 private constant EMPTY_KECCAK = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
 
@@ -97,26 +100,19 @@ library ProofLib {
 
         bytes memory fullBytes = _toFullBytes(path);
 
-        bytes memory buffer = new bytes(1 + fullBytes.length + 32);
+        Bytes.Builder memory builder = Bytes.newBuilder(1 + fullBytes.length + 32);
 
         uint256 pathInfo = 128;
         if (_pathWithoutFirstNibble(path)) {
             pathInfo += 64;
         }
         pathInfo += _pathLength(path) % 63;
-        buffer[0] = bytes1(uint8(pathInfo));
+        builder.appendUint8(uint8(pathInfo));
 
-        uint256 offset = 1;
-        for (uint256 i = 0; i < fullBytes.length; i++) {
-            buffer[offset + i] = fullBytes[i];
-        }
-        offset += fullBytes.length;
+        builder.appendBytes(fullBytes);
+        builder.appendBytes32(nodeMerkle);
 
-        for (uint256 i = 0; i < 32; i++) {
-            buffer[offset + i] = nodeMerkle[i];
-        }
-
-        return keccak256(buffer);
+        return keccak256(builder.seal());
     }
 
     struct ProofNode {
@@ -132,31 +128,22 @@ library ProofLib {
 
     function _computeNodeMerkle(bytes32[16] memory children, bytes memory value) private pure returns (bytes32) {
         uint256 valueBufLen = value.length == 0 ? 0 : value.length + 1;
-        bytes memory buffer = new bytes(1 + 16 * 32 + valueBufLen);
+        Bytes.Builder memory builder = Bytes.newBuilder(1 + 16 * 32 + valueBufLen);
 
-        buffer[0] = 'n';
-
-        uint256 offset = 1;
+        builder.appendUint8(uint8(bytes1('n')));
 
         // children
         for (uint256 i = 0; i < 16; i++) {
-            for (uint256 j = 0; j < 32; j++) {
-                buffer[offset] = children[i][j];
-                offset++;
-            }
+            builder.appendBytes32(children[i]);
         }
 
         // value
         if (value.length > 0) {
-            buffer[offset] = 'v';
-            offset++;
-
-            for (uint256 i = 0; i < value.length; i++) {
-                buffer[offset + i] = value[i];
-            }
+            builder.appendUint8(uint8(bytes1('v')));
+            builder.appendBytes(value);
         }
 
-        return keccak256(buffer);
+        return keccak256(builder.seal());
     }
 
     function Prove(
