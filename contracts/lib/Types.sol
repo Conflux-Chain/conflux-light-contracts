@@ -8,6 +8,7 @@ import "./ProofLib.sol";
 
 library Types {
     using RLPReader for RLPReader.RLPItem;
+    using RLPReader for RLPReader.Iterator;
 
     struct BlockHeader {
         bytes32 parentHash;
@@ -95,14 +96,15 @@ library Types {
         bytes32 deferredReceiptsRoot;
     }
 
-    function rlpDecodeBlockHeader(bytes memory header) internal pure returns (BlockHeaderWrapper memory) {
-        RLPReader.RLPItem memory item = RLPReader.toRlpItem(header);
-        RLPReader.RLPItem[] memory fields = item.toList();
-        return BlockHeaderWrapper(
-            bytes32(fields[0].toUintStrict()),
-            fields[1].toUint(),
-            bytes32(fields[6].toUintStrict())
-        );
+    function rlpDecodeBlockHeader(bytes memory header) internal pure returns (BlockHeaderWrapper memory wrapper) {
+        RLPReader.Iterator memory iter = RLPReader.toRlpItem(header).iterator();
+        wrapper.parentHash = bytes32(iter.next().toUintStrict());
+        wrapper.height = iter.next().toUint();
+        iter.next(); // timestamp
+        iter.next(); // miner
+        iter.next(); // txs root
+        iter.next(); // state root
+        wrapper.deferredReceiptsRoot = bytes32(iter.next().toUintStrict());
     }
 
     struct ReceiptProof {
