@@ -76,6 +76,7 @@ library LedgerInfoLib {
             require(validator.votingPower > 0, "validator voting pow is zero");
             require(validator.uncompressedPublicKey.length == 96, "invalid BLS public key length");
             committee.members[validator.account] = CommitteeMember(
+                // FIXME uncompressedPublicKey not validated by BLS signatures
                 validator.uncompressedPublicKey,
                 validator.votingPower
             );

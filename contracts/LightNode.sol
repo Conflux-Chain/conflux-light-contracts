@@ -75,6 +75,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
         bytes memory message = _ledgerInfo.bcsEncode(ledgerInfo);
         (bytes[] memory signatures, bytes[] memory publicKeys) = LedgerInfoLib.packSignatures(_committee, ledgerInfo);
+        // TODO validate aggregated BLS signature
         bool verified = _ledgerInfo.batchVerifyBLS(signatures, message, publicKeys);
         require(verified, "invalid BLS signatures");
 

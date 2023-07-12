@@ -4,6 +4,7 @@ pragma solidity ^0.8.4;
 
 /**
  * @dev Light node interface required by MAP PROTOCOL.
+ * https://github.com/mapprotocol/map-contracts/blob/main/protocol/contracts/interface/ILightNode.sol
  */
 interface ILightNodeMAP {
 
