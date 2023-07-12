@@ -100,7 +100,7 @@ library Types {
         RLPReader.RLPItem[] memory fields = item.toList();
         return BlockHeaderWrapper(
             bytes32(fields[0].toUintStrict()),
-            fields[1].toUintStrict(),
+            fields[1].toUint(),
             bytes32(fields[6].toUintStrict())
         );
     }
