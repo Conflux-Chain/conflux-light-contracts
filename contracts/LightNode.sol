@@ -13,34 +13,31 @@ import "./Provable.sol";
 
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
 
-    address public ledgerInfoUtil;
-    address public mptVerify;
+    LedgerInfo private _ledgerInfo;
+    Provable private _mptVerify;
 
-    ClientState private _state;
+    State private _state;
     LedgerInfoLib.Committee private _committee;
 
     // pow block number => pow block hash
     mapping(uint256 => bytes32) public finalizedBlocks;
 
-    /**
-     * @dev Always initialize with the first pos block of any epoch.
-     *
-     * Note, the `nextEpochState` comes from last epoch and not required to validate.
-     */
     function initialize(
-        address _controller,
-        address _ledgerInfoUtil,
-        address _mptVerify,
+        address controller,
+        address ledgerInfoUtil,
+        address mptVerify,
+        LedgerInfoLib.EpochState memory committee,
         LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo
     ) external override initializer {
-        require(_controller != address(0), "invalid controller address");
-        require(_mptVerify != address(0), "invalid mptVerify address");
+        require(controller != address(0), "invalid controller address");
+        require(ledgerInfoUtil != address(0), "invalid ledgerInfoUtil address");
+        require(mptVerify != address(0), "invalid mptVerify address");
 
-        _changeAdmin(_controller);
-        ledgerInfoUtil = _ledgerInfoUtil;
-        mptVerify = _mptVerify;
+        _changeAdmin(controller);
+        _ledgerInfo = LedgerInfo(ledgerInfoUtil);
+        _mptVerify = Provable(mptVerify);
 
-        require(ledgerInfo.epoch > 0, "invalid epoch");
+        require(committee.epoch > 0 && committee.epoch == ledgerInfo.epoch, "invalid committee epoch");
         require(ledgerInfo.pivot.height > 0, "block number too small");
 
         // init client state
@@ -53,8 +50,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         finalizedBlocks[ledgerInfo.pivot.height] = ledgerInfo.pivot.blockHash;
 
         // init committee
-        require(ledgerInfo.nextEpochState.epoch == ledgerInfo.epoch, "invalid committee epoch");
-        LedgerInfoLib.updateCommittee(_committee, ledgerInfo.nextEpochState);
+        LedgerInfoLib.updateCommittee(_committee, committee);
     }
 
     modifier onlyInitialized() {
@@ -66,14 +62,18 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         _state.maxBlocks = val;
     }
 
-    // relay pos block
-    function updateLightClient(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external override onlyInitialized whenNotPaused {
+    function updateLightClient(bytes memory _data) external override {
+        LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo = abi.decode(_data, (LedgerInfoLib.LedgerInfoWithSignatures));
+        relayPOS(ledgerInfo);
+    }
+
+    function relayPOS(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) public override onlyInitialized whenNotPaused {
         require(ledgerInfo.epoch == _state.epoch, "epoch mismatch");
         require(ledgerInfo.round > _state.round, "round mismatch");
 
-        bytes memory message = LedgerInfo(ledgerInfoUtil).bcsEncode(ledgerInfo);
+        bytes memory message = _ledgerInfo.bcsEncode(ledgerInfo);
         (bytes[] memory signatures, bytes[] memory publicKeys) = LedgerInfoLib.packSignatures(_committee, ledgerInfo);
-        bool verified = LedgerInfo(ledgerInfoUtil).batchVerifyBLS(signatures, message, publicKeys);
+        bool verified = _ledgerInfo.batchVerifyBLS(signatures, message, publicKeys);
         require(verified, "invalid BLS signatures");
 
         if (ledgerInfo.nextEpochState.epoch == 0) {
@@ -92,21 +92,21 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
             finalizedBlocks[ledgerInfo.pivot.height] = ledgerInfo.pivot.blockHash;
         }
 
-        emit UpdateLightClient(msg.sender, ledgerInfo.epoch, ledgerInfo.round, ledgerInfo.pivot.height);
-
         removeBlockHeader(1);
     }
 
-    // relay pow blocks
-    function updateBlockHeader(Types.BlockHeader[] memory headers) external override onlyInitialized whenNotPaused {
+    function updateBlockHeader(bytes memory _blockHeader) external override {
+        Types.BlockHeader[] memory headers = abi.decode(_blockHeader, (Types.BlockHeader[]));
+        relayPOW(headers);
+    }
+
+    function relayPOW(Types.BlockHeader[] memory headers) public override onlyInitialized whenNotPaused {
         Types.BlockHeader memory head = _validateHeaders(headers);
 
         if (finalizedBlocks[head.height] == bytes32(0)) {
             _state.blocks++;
             finalizedBlocks[head.height] = Types.computeBlockHash(head);
         }
-
-        emit UpdateBlockHeader(msg.sender, headers[0].height, headers[headers.length - 1].height);
 
         removeBlockHeader(1);
     }
@@ -162,12 +162,10 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         _state.earliestBlockNumber = earliest;
     }
 
-    function verifyReceiptProof(Types.ReceiptProof memory proof) public view override returns (
-        bool success, Types.TxLog[] memory logs
-    ) {
+    function verifyReceiptProof(Types.ReceiptProof memory proof) external view override returns (bool) {
         Types.BlockHeader memory head = _validateHeaders(proof.headers);
 
-        success = Provable(mptVerify).proveReceipt(
+        return _mptVerify.proveReceipt(
             head.deferredReceiptsRoot,
             proof.blockIndex,
             proof.blockProof,
@@ -176,10 +174,6 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
             proof.receipt,
             proof.receiptProof
         );
-
-        if (success) {
-            logs = proof.receipt.logs;
-        }
     }
 
     function verifyProofData(bytes memory receiptProof) external view override returns (
@@ -192,7 +186,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         // not sure why OutOfGas occurred if put below line in the end
         bytes memory encodedLogs = Types.encodeLogs(proof.receipt.logs);
 
-        success = Provable(mptVerify).proveReceipt(
+        success = _mptVerify.proveReceipt(
             head.deferredReceiptsRoot,
             proof.blockIndex,
             proof.blockProof,
@@ -209,8 +203,12 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         }
     }
 
-    function clientState() external view override returns(ClientState memory) {
+    function state() external view override returns(State memory) {
         return _state;
+    }
+
+    function headerHeight() external view override returns (uint256 height) {
+        return _state.finalizedBlockNumber;
     }
 
     function verifiableHeaderRange() external view override returns (uint256, uint256) {

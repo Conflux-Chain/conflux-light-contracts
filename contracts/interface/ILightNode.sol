@@ -2,12 +2,13 @@
 
 pragma solidity ^0.8.4;
 
+import "./ILightNodeMAP.sol";
 import "../lib/LedgerInfoLib.sol";
 import "../lib/Types.sol";
 
-interface ILightNode {
+interface ILightNode is ILightNodeMAP {
 
-    struct ClientState {
+    struct State {
         uint256 epoch;                  // pos block epoch
         uint256 round;                  // pos block round
 
@@ -18,24 +19,20 @@ interface ILightNode {
         uint256 maxBlocks;              // maximum number of pow blocks to retain
     }
 
-    event UpdateLightClient(address indexed account, uint256 epoch, uint256 round, uint256 height);
-    event UpdateBlockHeader(address indexed account, uint256 start, uint256 end);
-
     function initialize(
-        address _controller,
-        address _ledgerInfoUtil,
-        address _mptVerify,
+        address controller,
+        address ledgerInfoUtil,
+        address mptVerify,
+        LedgerInfoLib.EpochState memory committee,
         LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo
     ) external;
 
-    function verifyReceiptProof(Types.ReceiptProof memory proof) external view returns (bool success, Types.TxLog[] memory logs);
-    function verifyProofData(bytes memory receiptProof) external view returns (bool success, string memory message, bytes memory rlpLogs);
-
-    function updateLightClient(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external;
-    function updateBlockHeader(Types.BlockHeader[] memory headers) external;
+    function relayPOS(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external;
+    function relayPOW(Types.BlockHeader[] memory headers) external;
     function removeBlockHeader(uint256 limit) external;
 
-    function clientState() external view returns(ClientState memory);
-    function verifiableHeaderRange() external view returns (uint256, uint256);
+    function verifyReceiptProof(Types.ReceiptProof memory proof) external view returns (bool);
+
+    function state() external view returns(State memory);
     function nearestPivot(uint256 height) external view returns (uint256);
 }
