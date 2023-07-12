@@ -3,9 +3,11 @@
 pragma solidity ^0.8.4;
 
 import "./RLPEncode.sol";
+import "./RLPReader.sol";
 import "./ProofLib.sol";
 
 library Types {
+    using RLPReader for RLPReader.RLPItem;
 
     struct BlockHeader {
         bytes32 parentHash;
@@ -87,17 +89,33 @@ library Types {
         return keccak256(encoded);
     }
 
+    struct BlockHeaderWrapper {
+        bytes32 parentHash;
+        uint256 height;
+        bytes32 deferredReceiptsRoot;
+    }
+
+    function rlpDecodeBlockHeader(bytes memory header) internal pure returns (BlockHeaderWrapper memory) {
+        RLPReader.RLPItem memory item = RLPReader.toRlpItem(header);
+        RLPReader.RLPItem[] memory fields = item.toList();
+        return BlockHeaderWrapper(
+            bytes32(fields[0].toUintStrict()),
+            fields[1].toUintStrict(),
+            bytes32(fields[6].toUintStrict())
+        );
+    }
+
     struct ReceiptProof {
-        // Continuous block headers, that head is for receipts root,
+        // Continuous block headers (RLP encoded), that head is for receipts root,
         // and tail block should be relayed on chain.
-        BlockHeader[] headers;
+        bytes[] headers;
 
         bytes blockIndex;
         ProofLib.ProofNode[] blockProof;
 
         bytes32 receiptsRoot;
         bytes index;
-        TxReceipt receipt;
+        bytes receipt; // RLP encoded
         ProofLib.ProofNode[] receiptProof;
     }
 

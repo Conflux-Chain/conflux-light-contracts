@@ -28,7 +28,8 @@ interface ILightNode is ILightNodeMAP {
     ) external;
 
     function relayPOS(LedgerInfoLib.LedgerInfoWithSignatures memory ledgerInfo) external;
-    function relayPOW(Types.BlockHeader[] memory headers) external;
+    // relay RLP encoded pow block headers
+    function relayPOW(bytes[] memory headers) external;
     function removeBlockHeader(uint256 limit) external;
 
     function verifyReceiptProof(Types.ReceiptProof memory proof) external view returns (bool);

@@ -8,10 +8,12 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "./interface/ILightNode.sol";
 import "./lib/LedgerInfoLib.sol";
 import "./lib/Types.sol";
+import "./lib/RLPReader.sol";
 import "./LedgerInfo.sol";
 import "./Provable.sol";
 
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
+    using RLPReader for RLPReader.RLPItem;
 
     LedgerInfo private _ledgerInfo;
     Provable private _mptVerify;
@@ -96,40 +98,41 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     }
 
     function updateBlockHeader(bytes memory _blockHeader) external override {
-        Types.BlockHeader[] memory headers = abi.decode(_blockHeader, (Types.BlockHeader[]));
+        bytes[] memory headers = abi.decode(_blockHeader, (bytes[]));
         relayPOW(headers);
     }
 
-    function relayPOW(Types.BlockHeader[] memory headers) public override onlyInitialized whenNotPaused {
-        Types.BlockHeader memory head = _validateHeaders(headers);
+    function relayPOW(bytes[] memory headers) public override onlyInitialized whenNotPaused {
+        Types.BlockHeaderWrapper memory head = _validateHeaders(headers);
 
         if (finalizedBlocks[head.height] == bytes32(0)) {
             _state.blocks++;
-            finalizedBlocks[head.height] = Types.computeBlockHash(head);
+            finalizedBlocks[head.height] = keccak256(headers[0]);
         }
 
         removeBlockHeader(1);
     }
 
-    function _validateHeaders(Types.BlockHeader[] memory headers) private view returns (Types.BlockHeader memory head) {
+    function _validateHeaders(bytes[] memory headers) private view returns (Types.BlockHeaderWrapper memory head) {
         require(headers.length > 0, "empty block headers");
 
-        Types.BlockHeader memory tail = headers[headers.length - 1];
+        Types.BlockHeaderWrapper memory tail = Types.rlpDecodeBlockHeader(headers[headers.length - 1]);
         uint256 expectedBlockNumber = tail.height;
         bytes32 expectedBlockHash = finalizedBlocks[tail.height];
         require(expectedBlockHash != bytes32(0), "tail block not found");
         for (uint256 i = 0; i < headers.length; i++) {
             // validate in reverse order
             uint256 index = headers.length - 1 - i;
+            Types.BlockHeaderWrapper memory header = Types.rlpDecodeBlockHeader(headers[index]);
 
-            require(headers[index].height == expectedBlockNumber, "block number mismatch");
-            require(Types.computeBlockHash(headers[index]) == expectedBlockHash, "block hash mismatch");
+            require(header.height == expectedBlockNumber, "block number mismatch");
+            require(keccak256(headers[index]) == expectedBlockHash, "block hash mismatch");
 
             expectedBlockNumber--;
-            expectedBlockHash = headers[index].parentHash;
+            expectedBlockHash = header.parentHash;
         }
 
-        head = headers[0];
+        head = Types.rlpDecodeBlockHeader(headers[0]);
         require(head.height > _state.earliestBlockNumber, "block number too small");
     }
 
@@ -162,8 +165,8 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         _state.earliestBlockNumber = earliest;
     }
 
-    function verifyReceiptProof(Types.ReceiptProof memory proof) external view override returns (bool) {
-        Types.BlockHeader memory head = _validateHeaders(proof.headers);
+    function verifyReceiptProof(Types.ReceiptProof memory proof) public view override returns (bool) {
+        Types.BlockHeaderWrapper memory head = _validateHeaders(proof.headers);
 
         return _mptVerify.proveReceipt(
             head.deferredReceiptsRoot,
@@ -180,24 +183,10 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         bool success, string memory message, bytes memory rlpLogs
     ) {
         Types.ReceiptProof memory proof = abi.decode(receiptProof, (Types.ReceiptProof));
-
-        Types.BlockHeader memory head = _validateHeaders(proof.headers);
-
-        // not sure why OutOfGas occurred if put below line in the end
-        bytes memory encodedLogs = Types.encodeLogs(proof.receipt.logs);
-
-        success = _mptVerify.proveReceipt(
-            head.deferredReceiptsRoot,
-            proof.blockIndex,
-            proof.blockProof,
-            proof.receiptsRoot,
-            proof.index,
-            proof.receipt,
-            proof.receiptProof
-        );
+        success = verifyReceiptProof(proof);
 
         if (success) {
-            rlpLogs = encodedLogs;
+            rlpLogs = RLPReader.toRlpItem(proof.receipt).toList()[6].toRlpBytes();
         } else {
             message = "failed to verify mpt";
         }

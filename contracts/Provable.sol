@@ -3,7 +3,6 @@
 pragma solidity ^0.8.4;
 
 import "./lib/ProofLib.sol";
-import "./lib/Types.sol";
 
 contract Provable {
 
@@ -22,11 +21,10 @@ contract Provable {
         ProofLib.ProofNode[] memory blockProof,
         bytes32 receiptsRoot,
         bytes memory index,
-        Types.TxReceipt memory receipt,
+        bytes memory receipt, // RLP encoded receipt
         ProofLib.ProofNode[] memory receiptProof
     ) external pure returns (bool) {
-        bytes memory encodedReceipt = Types.encodeReceipt(receipt);
-        if (!ProofLib.Prove(receiptsRoot, index, keccak256(encodedReceipt), receiptProof)) {
+        if (!ProofLib.Prove(receiptsRoot, index, keccak256(receipt), receiptProof)) {
             return false;
         }
 
