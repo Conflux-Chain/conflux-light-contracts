@@ -193,6 +193,17 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         }
     }
 
+    function clientState() external view override returns(bytes memory) {
+        return abi.encodePacked(
+            _state.epoch,
+            _state.round,
+            _state.earliestBlockNumber,
+            _state.finalizedBlockNumber,
+            _state.blocks,
+            _state.maxBlocks
+        );
+    }
+
     function state() external view override returns(State memory) {
         return _state;
     }
