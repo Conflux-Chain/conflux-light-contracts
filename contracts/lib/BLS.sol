@@ -4,6 +4,8 @@ pragma solidity ^0.8.4;
 
 import "./Bytes.sol";
 
+import "@openzeppelin/contracts/utils/Strings.sol";
+
 /**
  * @dev BLS12-381 library to verify BLS signatures.
  */
@@ -17,9 +19,75 @@ library BLS {
     bytes32 private constant G1_NEG_ONE_3 = 0x67816aef1db507c96655b9d5caac42364e6f38ba0ecb751bad54dcd6b939c2ca;
 
     address private constant PRECOMPILE_BIG_MOD_EXP = 0x0000000000000000000000000000000000000005;
+    address private constant PRECOMPILE_BLS12_G1ADD = 0x000000000000000000000000000000000000000A;
     address private constant PRECOMPILE_BLS12_MAP_FP2_TO_G2 = 0x0000000000000000000000000000000000000012;
     address private constant PRECOMPILE_BLS12_G2ADD = 0x000000000000000000000000000000000000000d;
     address private constant PRECOMPILE_BLS12_PAIRING = 0x0000000000000000000000000000000000000010;
+
+    /**
+     * @dev Aggregate BLS public keys via BLS12_G1ADD.
+     */
+    function aggregatePublicKeys(bytes[] memory publicKeys) internal view returns (bytes memory) {
+        require(publicKeys.length > 0, "BLS: empty public keys");
+
+        if (publicKeys.length == 1) {
+            return publicKeys[0];
+        }
+
+        Bytes.Builder memory builder = Bytes.newBuilder(256);
+        _appendPublicKey(builder, publicKeys[0]);
+        bytes memory buf;
+
+        for (uint256 i = 1; i < publicKeys.length; i++) {
+            _appendPublicKey(builder, publicKeys[i]);
+            buf = builder.seal();
+            callPrecompile(PRECOMPILE_BLS12_G1ADD, buf, buf, 0, 128);
+            builder.reset();
+            builder.appendEmpty(128);
+        }
+
+        builder.appendEmpty(128);
+        buf = builder.seal();
+
+        bytes memory agg = new bytes(128);
+        Bytes.memcopy(agg, 0, buf, 0, 128);
+
+        return agg;
+    }
+
+    /**
+     * @dev Aggregate BLS signatures via BLS12_G2ADD.
+     */
+    function aggregateSignatures(bytes[] memory signatures) internal view returns (bytes memory) {
+        require(signatures.length > 0, "BLS: empty signatures");
+
+        if (signatures.length == 1) {
+            return signatures[0];
+        }
+
+        Bytes.Builder memory builder = Bytes.newBuilder(512);
+        _appendSignature(builder, signatures[0]);
+        bytes memory buf;
+
+        for (uint256 i = 1; i < signatures.length; i++) {
+            _appendSignature(builder, signatures[i]);
+            buf = builder.seal();
+            callPrecompile(PRECOMPILE_BLS12_G2ADD, buf, buf, 0, 256);
+            builder.reset();
+            builder.appendEmpty(256);
+        }
+
+        builder.appendEmpty(256);
+        buf = builder.seal();
+
+        bytes memory agg = new bytes(256);
+        Bytes.memcopy(agg, 0, buf, 64, 64);
+        Bytes.memcopy(agg, 64, buf, 0, 64);
+        Bytes.memcopy(agg, 128, buf, 192, 64);
+        Bytes.memcopy(agg, 192, buf, 128, 64);
+
+        return agg;
+    }
 
     /**
      * @dev Batch verify BLS signatures.
@@ -29,24 +97,26 @@ library BLS {
      */
     function batchVerify(bytes[] memory signatures, bytes memory message, bytes[] memory publicKeys) internal view returns (bool) {
         require(signatures.length == publicKeys.length, "signatures and publicKeys length mismatch");
-
-        bytes memory hashedMessage = hashToCurve(message);
-        Bytes.Builder memory builder = _prepareBuffer(hashedMessage);
-
-        for (uint256 i = 0; i < signatures.length; i++) {
-            if (!_verify(builder, signatures[i], publicKeys[i])) {
-                return false;
-            }
-        }
-
-        return true;
+        bytes memory aggSignature = aggregateSignatures(signatures);
+        return aggregateVerify(aggSignature, message, publicKeys);
     }
 
     /**
-     * @dev Verifies BLS signature.
-     * @param signature uncompressed BLS signature in 192 bytes.
+     * @dev Verify aggregated BLS signature.
+     * @param signature aggregated BLS signature.
      * @param message message to verify.
-     * @param publicKey uncompressed BLS public key in 96 bytes.
+     * @param publicKeys uncompressed BLS public keys.
+     */
+    function aggregateVerify(bytes memory signature, bytes memory message, bytes[] memory publicKeys) internal view returns (bool) {
+        bytes memory aggPubKey = aggregatePublicKeys(publicKeys);
+        return verify(signature, message, aggPubKey);
+    }
+
+    /**
+     * @dev verify BLS signature.
+     * @param signature uncompressed BLS signature.
+     * @param message message to verify.
+     * @param publicKey uncompressed BLS public key.
      */
     function verify(bytes memory signature, bytes memory message, bytes memory publicKey) internal view returns (bool) {
         bytes memory hashedMessage = hashToCurve(message);
@@ -54,15 +124,10 @@ library BLS {
     }
 
     function verifyHashed(bytes memory signature, bytes memory hashedMessage, bytes memory publicKey) internal view returns (bool) {
-        Bytes.Builder memory builder = _prepareBuffer(hashedMessage);
-        return _verify(builder, signature, publicKey);
-    }
-
-    function _prepareBuffer(bytes memory hashedMessage) private pure returns (Bytes.Builder memory) {
         Bytes.Builder memory builder = Bytes.newBuilder(768);
 
-        // public key with padding
-        builder.appendEmpty(128);
+        // public key
+        _appendPublicKey(builder, publicKey);
 
         // message
         builder.appendBytes(hashedMessage);
@@ -73,28 +138,10 @@ library BLS {
         builder.appendBytes32(G1_NEG_ONE_2);
         builder.appendBytes32(G1_NEG_ONE_3);
 
-        return builder;
-    }
+        // signature
+        _appendSignature(builder, signature);
 
-    function _verify(Bytes.Builder memory builder, bytes memory signature, bytes memory publicKey) private view returns (bool) {
-        require(signature.length == 192, "BLS: signature length mismatch");
-        require(publicKey.length == 96, "BLS: public key length mismatch");
-
-        builder.reset();
-
-        // public key with padding
-        _paddingAppend(builder, 16, publicKey, 0, 48);
-        _paddingAppend(builder, 16, publicKey, 48, 48);
-
-        // message and -1 already filled
-        builder.appendEmpty(384);
-
-        // signature with padding
-        _paddingAppend(builder, 16, signature, 48, 48);
-        _paddingAppend(builder, 16, signature, 0, 48);
-        _paddingAppend(builder, 16, signature, 144, 48);
-        _paddingAppend(builder, 16, signature, 96, 48);
-
+        // pairing
         bytes memory output = new bytes(32);
         callPrecompile(PRECOMPILE_BLS12_PAIRING, builder.seal(), output);
         return abi.decode(output, (bool));
@@ -190,6 +237,33 @@ library BLS {
         builder.appendBytes(val, offset, len);
     }
 
+    function _appendPublicKey(Bytes.Builder memory builder, bytes memory publicKey) private pure {
+        require(publicKey.length == 96 || publicKey.length == 128, "BLS: public key length mismatch");
+
+        if (publicKey.length == 96) {
+            _paddingAppend(builder, 16, publicKey, 0, 48);
+            _paddingAppend(builder, 16, publicKey, 48, 48);
+        } else {
+            builder.appendBytes(publicKey);
+        }
+    }
+
+    function _appendSignature(Bytes.Builder memory builder, bytes memory signature) private pure {
+        require(signature.length == 192 || signature.length == 256, "BLS: signature length mismatch");
+
+        if (signature.length == 192) {
+            _paddingAppend(builder, 16, signature, 48, 48);
+            _paddingAppend(builder, 16, signature, 0, 48);
+            _paddingAppend(builder, 16, signature, 144, 48);
+            _paddingAppend(builder, 16, signature, 96, 48);
+        } else {
+            builder.appendBytes(signature, 64, 64);
+            builder.appendBytes(signature, 0, 64);
+            builder.appendBytes(signature, 192, 64);
+            builder.appendBytes(signature, 128, 64);
+        }
+    }
+
     function callPrecompile(address precompile, bytes memory input, bytes memory output) internal view {
         return callPrecompile(precompile, input, 0, input.length, output, 0, output.length);
     }
@@ -213,7 +287,7 @@ library BLS {
             success := staticcall(gas(), precompile, inputPtr, inputLen, outputPtr, outputLen)
         }
 
-        require(success, "BLS: Failed to call pre-compile contract");
+        require(success, string(abi.encodePacked("BLS: Failed to call pre-compile contract ", Strings.toHexString(precompile))));
     }
 
 }

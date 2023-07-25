@@ -17,12 +17,8 @@ library LedgerInfoLib {
         EpochState nextEpochState;  // only available for the last block of epoch
         Decision pivot;             // may be empty for epoch genesis block
         bytes32 consensusDataHash;
-        AccountSignature[] signatures;
-    }
-
-    struct AccountSignature {
-        bytes32 account;
-        bytes consensusSignature;
+        bytes32[] accounts;
+        bytes aggregatedSignature;
     }
 
     struct Decision {
@@ -74,7 +70,8 @@ library LedgerInfoLib {
         for (uint256 i = 0; i < newLen; i++) {
             ValidatorInfo memory validator = state.validators[i];
             require(validator.votingPower > 0, "validator voting pow is zero");
-            require(validator.uncompressedPublicKey.length == 96, "invalid BLS public key length");
+            uint256 pubKeyLen = validator.uncompressedPublicKey.length;
+            require(pubKeyLen == 96 || pubKeyLen == 128, "invalid BLS public key length");
             committee.members[validator.account] = CommitteeMember(
                 // FIXME uncompressedPublicKey not validated by BLS signatures
                 validator.uncompressedPublicKey,
@@ -104,18 +101,18 @@ library LedgerInfoLib {
     }
 
     function packSignatures(Committee storage committee, LedgerInfoWithSignatures memory ledgerInfo) internal view returns (
-        bytes[] memory signatures, bytes[] memory publicKeys
+        bytes memory signature, bytes[] memory publicKeys
     ) {
-        uint256 numSignatures = ledgerInfo.signatures.length;
-        signatures = new bytes[](numSignatures);
-        publicKeys = new bytes[](numSignatures);
+        uint256 numAccounts = ledgerInfo.accounts.length;
+        signature = ledgerInfo.aggregatedSignature;
+        publicKeys = new bytes[](numAccounts);
 
         uint256 voted = 0;
         bytes32 lastAccount = 0;
 
-        for (uint256 i = 0; i < numSignatures; i++) {
+        for (uint256 i = 0; i < numAccounts; i++) {
             // requires in order to avoid duplicated pos account
-            bytes32 account = ledgerInfo.signatures[i].account;
+            bytes32 account = ledgerInfo.accounts[i];
             require(account > lastAccount, "signature accounts not in order");
             lastAccount = account;
 
@@ -124,7 +121,6 @@ library LedgerInfoLib {
             require(member.votingPower > 0, "validator not in committee");
             voted += member.votingPower;
 
-            signatures[i] = ledgerInfo.signatures[i].consensusSignature;
             publicKeys[i] = member.publicKey;
         }
 
