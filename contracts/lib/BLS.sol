@@ -19,7 +19,7 @@ library BLS {
     bytes32 private constant G1_NEG_ONE_3 = 0x67816aef1db507c96655b9d5caac42364e6f38ba0ecb751bad54dcd6b939c2ca;
 
     address private constant PRECOMPILE_BIG_MOD_EXP = 0x0000000000000000000000000000000000000005;
-    address private constant PRECOMPILE_BLS12_G1ADD = 0x000000000000000000000000000000000000000A;
+    address internal constant PRECOMPILE_BLS12_G1ADD = 0x000000000000000000000000000000000000000A;
     address private constant PRECOMPILE_BLS12_MAP_FP2_TO_G2 = 0x0000000000000000000000000000000000000012;
     address private constant PRECOMPILE_BLS12_G2ADD = 0x000000000000000000000000000000000000000d;
     address private constant PRECOMPILE_BLS12_PAIRING = 0x0000000000000000000000000000000000000010;
@@ -288,6 +288,45 @@ library BLS {
         }
 
         require(success, string(abi.encodePacked("BLS: Failed to call pre-compile contract ", Strings.toHexString(precompile))));
+    }
+
+    // COMPRESSION_P = P / 2
+    bytes32 private constant COMPRESSION_P_0 = 0x000000000000000000000000000000000d0088f51cbff34d258dd3db21a5d66b;
+    bytes32 private constant COMPRESSION_P_1 = 0xb23ba5c279c2895fb39869507b587b120f55ffff58a9ffffdcff7fffffffd555;
+
+    /**
+     * @dev Compress public key into 48 bytes.
+     */
+    function compressPublicKey(bytes memory uncompressed) internal pure returns (bytes memory) {
+        require(uncompressed.length == 96 || uncompressed.length == 128, "BLS: uncompressed public key length mismatch");
+
+        bytes memory compressed = new bytes(48);
+        bytes32 y0;
+        bytes32 y1;
+
+        if (uncompressed.length == 96) {
+            assembly {
+                y0 := mload(add(uncompressed, 80)) // header size (32 bytes) + x (48 bytes)
+                y0 := shr(128, y0) // shift right 16 bytes
+                y1 := mload(add(uncompressed, 96))
+            }
+
+            Bytes.memcopy(compressed, 0, uncompressed, 0, 48);
+        } else {
+            assembly {
+                y0 := mload(add(uncompressed, 96)) // header size (32 bytes) + x (64 bytes)
+                y1 := mload(add(uncompressed, 128))
+            }
+
+            Bytes.memcopy(compressed, 0, uncompressed, 16, 48);
+        }
+
+        compressed[0] |= 0x80; // compression flag
+        if (y0 > COMPRESSION_P_0 || (y0 == COMPRESSION_P_0 && y1 > COMPRESSION_P_1)) {
+            compressed[0] |= 0x20;
+        }
+
+        return compressed;
     }
 
 }

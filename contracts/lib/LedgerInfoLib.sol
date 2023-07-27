@@ -3,6 +3,8 @@
 pragma solidity ^0.8.4;
 
 import "./BCS.sol";
+import "./BLS.sol";
+import "./Bytes.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 
 library LedgerInfoLib {
@@ -36,7 +38,6 @@ library LedgerInfoLib {
 
     struct ValidatorInfo {
         bytes32 account;
-        bytes compressedPublicKey;
         bytes uncompressedPublicKey; // encoded uncompressed public key in 128 bytes
         bytes vrfPublicKey;
         uint64 votingPower;
@@ -54,7 +55,38 @@ library LedgerInfoLib {
         uint64 votingPower;
     }
 
+    function _validateEpochState(EpochState memory state) private view {
+        require(state.epoch > 0, "EpochState: invalid epoch");
+        require(state.quorumVotingPower <= state.totalVotingPower, "EpochState: invalid voting power");
+        require(state.validators.length > 0, "EpochState: empty validators");
+
+        // IMPORTANT: SECURITY CHECK REQUIRED TO AVOID MALICIOUS MODIFIED UNCOMPRESSED PUBLIC KEY RELAYED.
+        // 
+        // Validate uncompressed public key, since it is not verified via BLS signature.
+        // Basically, use BLS12_G1ADD to verify all public keys are valid (on curve).
+        bytes memory input = new bytes(256);
+        bytes memory output = new bytes(128);
+        for (uint256 i = 0; i < state.validators.length; i += 2) {
+            bytes memory key1 = state.validators[i].uncompressedPublicKey;
+            require(key1.length == 128, "EpochState: uncompressed public key requires length 128");
+
+            bytes memory key2;
+            if (i + 1 >= state.validators.length) {
+                key2 = state.validators[0].uncompressedPublicKey;
+            } else {
+                key2 = state.validators[i + 1].uncompressedPublicKey;
+                require(key2.length == 128, "EpochState: uncompressed public key requires length 128");
+            }
+
+            Bytes.copy(input, 0, key1);
+            Bytes.copy(input, 128, key2);
+            BLS.callPrecompile(BLS.PRECOMPILE_BLS12_G1ADD, input, output);
+        }
+    }
+
     function updateCommittee(Committee storage committee, EpochState memory state) internal {
+        _validateEpochState(state);
+
         if (committee.quorumVotingPower != state.quorumVotingPower) {
             committee.quorumVotingPower = state.quorumVotingPower;
         }
@@ -73,7 +105,6 @@ library LedgerInfoLib {
             uint256 pubKeyLen = validator.uncompressedPublicKey.length;
             require(pubKeyLen == 96 || pubKeyLen == 128, "invalid BLS public key length");
             committee.members[validator.account] = CommitteeMember(
-                // FIXME uncompressedPublicKey not validated by BLS signatures
                 validator.uncompressedPublicKey,
                 validator.votingPower
             );
@@ -200,7 +231,7 @@ library LedgerInfoLib {
             size += BCS.SIZE_BYTES32;
 
             // map value: public key, vrf public key and voting power
-            size += BCS.sizeBytes(validator.compressedPublicKey);
+            size += 49; // length (1 bytes) + compressed pub key (48 bytes)
             size += BCS.SIZE_OPTION;
             if (validator.vrfPublicKey.length > 0) {
                 size += BCS.sizeBytes(validator.vrfPublicKey);
@@ -224,7 +255,8 @@ library LedgerInfoLib {
             ValidatorInfo memory validator = state.validators[i];
             BCS.encodeBytes32(builder, validator.account);
 
-            BCS.encodeBytes(builder, validator.compressedPublicKey);
+            bytes memory compressed = BLS.compressPublicKey(validator.uncompressedPublicKey);
+            BCS.encodeBytes(builder, compressed);
             BCS.encodeOption(builder, validator.vrfPublicKey.length > 0);
             if (validator.vrfPublicKey.length > 0) {
                 BCS.encodeBytes(builder, validator.vrfPublicKey);
