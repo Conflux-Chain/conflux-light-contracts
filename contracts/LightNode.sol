@@ -193,7 +193,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     }
 
     function clientState() external view override returns(bytes memory) {
-        return abi.encodePacked(
+        return abi.encode(
             _state.epoch,
             _state.round,
             _state.earliestBlockNumber,
@@ -215,7 +215,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         return (_state.earliestBlockNumber, _state.finalizedBlockNumber);
     }
 
-    function nearestPivot(uint256 height) external view override returns (uint256) {
+    function nearestPivot(uint256 height) public view override returns (uint256) {
         require(height >= _state.earliestBlockNumber, "block already pruned");
         require(height <= _state.finalizedBlockNumber, "block not finalized yet");
 
@@ -224,6 +224,12 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         }
 
         return height;
+    }
+
+    function finalizedState(bytes memory data) external view override returns (bytes memory) {
+        uint256 height = abi.decode(data, (uint256));
+        uint256 pivot = nearestPivot(height);
+        return abi.encode(pivot);
     }
 
     /** common code copied from other light nodes ********************/

@@ -20,4 +20,6 @@ interface ILightNodeMAP {
 
     function verifiableHeaderRange() external view returns (uint256, uint256);
 
+    function finalizedState(bytes memory data) external view returns (bytes memory);
+
 }
