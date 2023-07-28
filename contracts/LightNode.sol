@@ -186,7 +186,7 @@ contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
         success = verifyReceiptProof(proof);
 
         if (success) {
-            rlpLogs = RLPReader.toRlpItem(proof.receipt).toList()[6].toRlpBytes();
+            rlpLogs = RLPReader.toRlpItem(proof.receipt).toList()[4].toRlpBytes();
         } else {
             message = "failed to verify mpt";
         }
